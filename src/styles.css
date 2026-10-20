@@ -142,3 +142,38 @@
     color: var(--color-foreground);
   }
 }
+
+:root { --ink: oklch(0.16 0.005 270); --paper: oklch(0.95 0.01 90); --siren-red: oklch(0.63 0.24 25); --siren-blue: oklch(0.6 0.2 260); --nitro: oklch(0.72 0.19 50); }
+html, body { overscroll-behavior: none; background: var(--ink); }
+.game-shell { position: fixed; inset: 0; background: var(--ink); color: var(--paper); font-family: "Space Mono", ui-monospace, monospace; user-select: none; -webkit-user-select: none; }
+.game-stage { position: absolute; inset: 0; overflow: hidden; touch-action: none; }
+.hud-panel { background: color-mix(in oklab, var(--ink) 75%, transparent); border: 1.5px solid color-mix(in oklab, var(--paper) 40%, transparent); padding: .4rem .7rem; border-radius: 4px; backdrop-filter: blur(4px); min-width: 5.5rem; }
+.hud-label { font-size: .65rem; letter-spacing: .15em; text-transform: uppercase; opacity: .7; }
+.hud-value { font-family: "Bebas Neue", sans-serif; font-size: 1.8rem; line-height: 1; }
+.life-pip { width: .8rem; height: .8rem; border-radius: 2px; background: var(--siren-red); box-shadow: 0 0 8px var(--siren-red); }
+.life-pip-empty { background: transparent; border: 1px solid var(--paper); box-shadow: none; opacity: .4; }
+.meter { height: 6px; background: color-mix(in oklab, var(--paper) 15%, transparent); border-radius: 3px; overflow: hidden; }
+.meter-fill-boost { height: 100%; background: var(--nitro); box-shadow: 0 0 8px var(--nitro); }
+.icon-btn { width: 2.6rem; height: 2.6rem; border-radius: 4px; border: 1.5px solid color-mix(in oklab, var(--paper) 50%, transparent); background: color-mix(in oklab, var(--ink) 75%, transparent); color: var(--paper); font-size: 1rem; }
+.heat-badge { font-size: .7rem; letter-spacing: .2em; padding: .2rem .5rem; border-radius: 3px; animation: siren .5s steps(1) infinite; }
+@keyframes siren { 0% { background: var(--siren-red); } 50% { background: var(--siren-blue); } }
+.touch-controls { position: absolute; inset-inline: 0; bottom: 0; display: flex; justify-content: space-between; padding: 1rem; padding-bottom: max(1rem, env(safe-area-inset-bottom)); pointer-events: none; }
+@media (hover: hover) and (pointer: fine) { .touch-controls { opacity: .35; } }
+.touch-btn { pointer-events: auto; width: 4.6rem; height: 4.6rem; border-radius: 50%; border: 2px solid color-mix(in oklab, var(--paper) 60%, transparent); background: color-mix(in oklab, var(--ink) 60%, transparent); color: var(--paper); font-family: "Bebas Neue", sans-serif; font-size: 1.4rem; touch-action: none; }
+.touch-btn:active { background: color-mix(in oklab, var(--paper) 25%, transparent); }
+.touch-btn-brake { border-color: var(--siren-red); font-size: 1rem; }
+.touch-btn-boost { border-color: var(--nitro); color: var(--nitro); font-size: 1rem; }
+.overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 1rem; background: radial-gradient(circle, color-mix(in oklab, var(--ink) 40%, transparent), color-mix(in oklab, var(--ink) 92%, transparent)); overflow-y: auto; }
+.overlay-card { text-align: center; max-width: 30rem; display: flex; flex-direction: column; align-items: center; }
+.start-car { height: 9rem; width: auto; filter: drop-shadow(0 0 22px color-mix(in oklab, var(--siren-red) 50%, transparent)); transform: rotate(-8deg); margin-bottom: .5rem; }
+.kicker { font-size: .75rem; letter-spacing: .4em; text-transform: uppercase; color: var(--siren-red); }
+.title { font-family: "Bebas Neue", sans-serif; font-size: clamp(2.8rem, 11vw, 5rem); line-height: .9; text-shadow: 3px 0 var(--siren-red), -3px 0 var(--siren-blue); }
+.subtitle { font-family: "Bebas Neue", sans-serif; font-size: 1.6rem; letter-spacing: .3em; opacity: .85; }
+.controls-list { margin: 1rem 0 .5rem; font-size: .8rem; display: grid; gap: .35rem; }
+kbd { display: inline-block; min-width: 1.5rem; padding: 0 .3rem; margin: 0 .1rem; border: 1px solid var(--paper); border-bottom-width: 3px; border-radius: 3px; font-size: .7rem; }
+.tip { font-size: .8rem; opacity: .75; margin: .5rem 0 1rem; }
+.cta { font-family: "Bebas Neue", sans-serif; font-size: 1.8rem; letter-spacing: .15em; padding: .5rem 2.5rem; background: var(--paper); color: var(--ink); border-radius: 3px; box-shadow: 4px 4px 0 var(--siren-red), -4px -4px 0 var(--siren-blue); }
+.cta:hover { transform: translateY(-1px); }
+.ghost-btn { font-size: .8rem; letter-spacing: .2em; text-transform: uppercase; text-decoration: underline; color: var(--paper); }
+.final-score { font-family: "Bebas Neue", sans-serif; font-size: 4rem; line-height: 1; margin-top: .5rem; }
+.new-best { color: var(--nitro); letter-spacing: .2em; font-size: .8rem; }
