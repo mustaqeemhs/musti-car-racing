@@ -4,10 +4,10 @@ import { SketchRun } from "@/game/SketchRun";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Police Pursuit — Sketch Run" },
-      { name: "description", content: "Arcade getaway racer in graphite sketch style. Dodge traffic and outrun the cops." },
-      { property: "og:title", content: "Police Pursuit — Sketch Run" },
-      { property: "og:description", content: "Dodge traffic and outrun the cops in a pencil-sketch supercar." },
+      { title: "Musti Car Racing" },
+      { name: "description", content: "Premium arcade pursuit racer: dodge traffic, drift, hit nitro and outrun the cops." },
+      { property: "og:title", content: "Musti Car Racing" },
+      { property: "og:description", content: "Drift, boost and outrun the cops in a white supercar." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
