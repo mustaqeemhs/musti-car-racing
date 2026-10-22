@@ -23,7 +23,7 @@ const PLAYER_PAINTS = [
 ];
 const TRAFFIC_MODELS: VehicleModel[] = ["sedan", "sedan", "coupe", "suv", "suv", "taxi", "van"];
 const DEFAULT_SETTINGS: Settings = { control: "touch", sens: 1, neutral: 0, paint: "#ffffff", name: "Racer" };
-const blankInput = (): Input => ({ left: false, right: false, up: false, down: false, boost: false });
+const blankInput = (): Input => ({ left: false, right: false, up: false, down: false, boost: false, drift: false });
 
 /* ---------------- audio ---------------- */
 class Sfx {

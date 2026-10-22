@@ -1,4 +1,4 @@
-import { isBike, type VehicleModel } from "./engine";
+import { isBike, type BikeModel, type VehicleModel } from "./engine";
 
 /** Length/width ratio per model, used for spawn sizing. */
 export const MODEL_RATIO: Record<VehicleModel, number> = {
@@ -75,7 +75,7 @@ function bodyPath(c: CanvasRenderingContext2D, w: number, h: number, s: Spec) {
 }
 
 /** Draw a top-down car centered at 0,0, front facing up. */
-export function drawVehicle(c: CanvasRenderingContext2D, model: Exclude<VehicleModel, "sportbike" | "naked" | "dirtbike" | "tourer">, color: string, w: number, h: number) {
+export function drawVehicle(c: CanvasRenderingContext2D, model: Exclude<VehicleModel, BikeModel>, color: string, w: number, h: number) {
   const s = SPECS[model];
   const paint = model === "taxi" ? "#f2c21b" : model === "police" ? "#121418" : color;
   const l = -w / 2, t = -h / 2;
@@ -166,7 +166,7 @@ export function drawVehicle(c: CanvasRenderingContext2D, model: Exclude<VehicleM
 }
 
 /** Draw a top-down motorcycle centered at 0,0, front facing up. */
-export function drawMotorcycle(c: CanvasRenderingContext2D, model: "sportbike" | "naked" | "dirtbike" | "tourer", color: string, w: number, h: number) {
+export function drawMotorcycle(c: CanvasRenderingContext2D, model: BikeModel, color: string, w: number, h: number) {
   const t = -h / 2, b = h / 2;
   const paint = color;
   // ground shadow
