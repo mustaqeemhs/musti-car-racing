@@ -16,7 +16,7 @@ describe("engine", () => {
   it("tilt steers relative to calibrated neutral and clamps", () => {
     expect(tiltToSteer(40, 10, 1, 3)).toBe(1);
     expect(tiltToSteer(-50, 10, 1, 3)).toBe(-1);
-    expect(tiltToSteer(23.5, 10, 1, 3)).toBeCloseTo(0.4, 2);
+    expect(tiltToSteer(23.5, 10, 1, 3)).toBeCloseTo(10.5 / 27, 2); // linear from deadzone to 30° lock
   });
   it("acceleration slows near top speed and nitro accelerates harder", () => {
     expect(accelRate(1200, false)).toBeLessThan(accelRate(200, false));
