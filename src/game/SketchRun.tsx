@@ -3,10 +3,9 @@ import playerImgSrc from "@/assets/player-car.png";
 import heroImgSrc from "@/assets/hero-car.jpg";
 import { BASE_SPEED, MAX_LIVES, MAX_SPEED, accelRate, overlaps, pickLane, scoreFor, tiltToSteer, type Car, type Input, type Particle, type VehicleModel } from "./engine";
 import { MODEL_RATIO, MODEL_WIDTH, PAINTS, clearSpriteCache, drawLightbar, vehicleSprite } from "./carArt";
-
+import { PlayerAccount } from "./PlayerAccount";
 type Phase = "menu" | "playing" | "paused" | "over";
-type Screen = "home" | "garage" | "howto" | "multi" | "controls";
-type Hud = { score: number; speed: number; lives: number; boost: number; heat: number; drift: number; traction: number };
+type Screen = "home" | "garage" | "howto" | "multi" | "controls" | "account";
 type Settings = { control: "touch" | "tilt"; sens: number; neutral: number; paint: string; name: string };
 type Entry = { name: string; score: number; time: number; distance: number; date: number };
 type Popup = { text: string; x: number; y: number; life: number; color: string };
@@ -633,6 +632,9 @@ export function SketchRun() {
                     <button className="btn-secondary" onClick={() => setScreen("howto")}>How to play</button>
                     <button className="btn-secondary" onClick={() => setScreen("multi")}>Multiplayer</button>
                     <button className="btn-secondary" onClick={() => setScreen("controls")}>Controls</button>
+                    <button className="btn-secondary" onClick={() => setScreen("account")}>
+  Guest Profile & Jaa'izah
+</button>
                   </nav>
                   <div className="menu-foot">
                     <span className="hud-label">Best {best.toLocaleString()}</span>
@@ -695,11 +697,22 @@ export function SketchRun() {
                   {board.slice(0, 5).map((e, i) => <li key={e.date}><span>{i + 1}. {e.name}</span><span>{e.score.toLocaleString()} · {e.time.toFixed(0)}s</span></li>)}
                 </ol>
                 <p className="note">Points and trophies only — no cash prizes.</p>
+                
                 <button className="cta" onClick={() => setScreen("home")}>BACK</button>
+              </div>
+            )}
+
+            {screenName === "account" && (
+              <div className="menu-card">
+                <PlayerAccount />
+                <button className="cta mt-4" onClick={() => setScreen("home")}>
+                  BACK TO HOME
+                </button>
               </div>
             )}
           </div>
         )}
+
 
         {phase === "paused" && (
           <div className="menu">
