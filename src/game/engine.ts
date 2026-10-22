@@ -17,8 +17,9 @@ export const MAX_SPEED = 1250;
 export const REVERSE_SPEED = 170; // px/s — slower than any forward speed
 export const NITRO_PICKUP_AMOUNT = 0.34;
 
-export const BIKE_MODELS: VehicleModel[] = ["sportbike", "naked", "dirtbike", "tourer"];
-export function isBike(model: VehicleModel) {
+export type BikeModel = "sportbike" | "naked" | "dirtbike" | "tourer";
+export const BIKE_MODELS: BikeModel[] = ["sportbike", "naked", "dirtbike", "tourer"];
+export function isBike(model: VehicleModel): model is BikeModel {
   return BIKE_MODELS.includes(model);
 }
 
