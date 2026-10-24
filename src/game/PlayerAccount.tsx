@@ -1,5 +1,6 @@
 
 import { useEffect, useState } from "react";
+import { isValidUsername, normalizeUsername } from "./username";
 
 type GuestProfile = {
   username: string;
@@ -37,9 +38,10 @@ function readGuest(): GuestProfile | null {
 
 export function PlayerAccount() {
   const [guest, setGuest] = useState<GuestProfile | null>(null);
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState("musti");
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
+  const [editingUsername, setEditingUsername] = useState(false);
 
   useEffect(() => {
     setGuest(readGuest());
@@ -51,32 +53,28 @@ export function PlayerAccount() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
       setGuest(next);
       setError("");
+      return true;
     } catch {
       setError("Could not save your guest profile. Check your browser storage settings.");
+      return false;
     }
   }
 
   function startPlaying() {
-    const name = username.trim().replace(/\s+/g, " ");
-
-    if (name.length < 3 || name.length > 18) {
+    const name = normalizeUsername(username);
+    if (!isValidUsername(name)) {
       setError("Choose a username between 3 and 18 characters.");
       return;
     }
 
-    if (!/^[a-zA-Z0-9 _-]+$/.test(name)) {
-      setError("Use letters, numbers, spaces, hyphens or underscores only.");
-      return;
-    }
-
     if (guest) {
-      saveGuest({ ...guest, username: name });
+      if (saveGuest({ ...guest, username: name })) setEditingUsername(false);
     } else {
-      saveGuest({
+      if (saveGuest({
         username: name,
         balance: 1000,
         lastDailyReward: "",
-      });
+      })) setEditingUsername(false);
     }
   }
 
@@ -98,7 +96,7 @@ export function PlayerAccount() {
 
   function changeUsername() {
     setUsername(guest?.username ?? "");
-    setGuest(null);
+    setEditingUsername(true);
     setError("");
   }
 
@@ -150,7 +148,7 @@ export function PlayerAccount() {
         MUSTI CAR RACING · GUEST MODE
       </p>
 
-      {guest ? (
+      {guest && !editingUsername ? (
         <>
           <div
             style={{
@@ -180,8 +178,9 @@ export function PlayerAccount() {
 
           <p style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>
             Guest progress is saved in this browser on this device. Clearing
-            browser data can erase it. Guest balances are not secure for
-            competitive multiplayer wagers yet.
+            browser data can erase it. Guest usernames are local only; reserve a
+            separate globally unique online username in Multiplayer. Online
+            sign-in never transfers your wallet or progression.
           </p>
         </>
       ) : (
@@ -196,7 +195,7 @@ export function PlayerAccount() {
             onKeyDown={(event) => {
               if (event.key === "Enter") startPlaying();
             }}
-            placeholder="e.g. MustiRacer"
+            placeholder="musti"
             maxLength={18}
             autoComplete="nickname"
           />

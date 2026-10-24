@@ -1,28 +1,125 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import playerImgSrc from "@/assets/player-car.png";
 import heroImgSrc from "@/assets/hero-car.jpg";
-import { BASE_SPEED, MAX_LIVES, MAX_SPEED, accelRate, overlaps, pickLane, scoreFor, tiltToSteer, type Car, type Input, type Particle, type VehicleModel } from "./engine";
-import { MODEL_RATIO, MODEL_WIDTH, PAINTS, clearSpriteCache, drawLightbar, vehicleSprite } from "./carArt";
+import { getSupabaseClient } from "@/lib/supabase";
+import { MultiplayerLobby, type MultiplayerRaceStart } from "./MultiplayerLobby";
+import {
+  BASE_SPEED,
+  MAX_LIVES,
+  MAX_SPEED,
+  NITRO_PICKUP_AMOUNT,
+  accelRate,
+  claimPickupOnce,
+  claimNearMiss,
+  createPursuitState,
+  generateCoinNitroFormation,
+  generatePickupPattern,
+  isBike,
+  overlaps,
+  pickupBoost,
+  PICKUP_PATTERN_INTERVALS,
+  pickLane,
+  pickPoliceLane,
+  raceDifficulty,
+  sceneryZoneBlend,
+  scoreFor,
+  tiltToSteer,
+  updatePursuit,
+  type Car,
+  type Coin,
+  type Hazard,
+  type Input,
+  type Particle,
+  type Pickup,
+  type PursuitIncidentKind,
+  type PursuitEvent,
+  type VehicleModel,
+} from "./engine";
+
+import {
+  MODEL_RATIO,
+  MODEL_WIDTH,
+  PAINTS,
+  clearSpriteCache,
+  centeredBikePreviewPosition,
+  drawBikeSprite,
+  drawLightbar,
+  playerBikeRenderSize,
+  vehicleSprite,
+  VEHICLE_DEFS,
+} from "./carArt";
+
+import {
+  WALLET_KEY,
+  VEHICLE_PRICES,
+  readOwnedVehicles,
+  readWalletBalance,
+  readVehicleUpgrades,
+  purchaseVehicleUpgrade,
+  saveOwnedVehicles,
+  readSelectedVehicle,
+  saveSelectedVehicle,
+} from "./garageData";
+import {
+  ACHIEVEMENTS,
+  EMPTY_PROGRESSION,
+  completeRace,
+  recordRewardEvent,
+  readProgression,
+  type AchievementId,
+  type ProgressionData,
+  type RewardEventKind,
+} from "./progression";
+import {
+  EMPTY_UPGRADE_LEVELS,
+  UPGRADE_CATEGORIES,
+  UPGRADE_DEFINITIONS,
+  MAX_UPGRADE_LEVEL,
+  nextUpgradeCost,
+  upgradeBenefit,
+  getVehiclePerformance,
+  type UpgradeCategory,
+  type VehicleUpgradeLevels,
+} from "./vehicleUpgrades";
 import { PlayerAccount } from "./PlayerAccount";
+import { parseRacePositions, type OnlineRacer } from "./multiplayerState";
 type Phase = "menu" | "playing" | "paused" | "over";
-type Screen = "home" | "garage" | "howto" | "multi" | "controls" | "account";
+type Screen = "home" | "garage" | "howto" | "multi" | "controls" | "account" | "achievements" | "upgrades";
 type Settings = { control: "touch" | "tilt"; sens: number; neutral: number; paint: string; name: string };
 type Entry = { name: string; score: number; time: number; distance: number; date: number };
 type Popup = { text: string; x: number; y: number; life: number; color: string };
-type Prop = { kind: "lamp" | "sign" | "building" | "tree"; side: -1 | 1; y: number; seed: number };
+type Hud = {
+  score: number;
+  speed: number;
+  lives: number;
+  boost: number;
+  heat: number;
+  drift: number;
+  traction: number;
+  wantedLevel: number;
+  policeWarning: number;
+};
+type Prop = { kind: "lamp" | "sign" | "building" | "tree" | "shrub" | "barrier"; side: -1 | 1; y: number; seed: number };
 type Skid = { x: number; y: number; a: number };
 
 const BEST_KEY = "mcr.best";
 const SOUND_KEY = "mcr.sound";
 const SET_KEY = "mcr.settings";
 const BOARD_KEY = "mcr.board";
+const COIN_REWARD = 5;
+const NEAR_MISS_COIN_REWARD = 2;
 const PLAYER_PAINTS = [
   { id: "#ffffff", name: "Arctic" }, { id: "#d62b2b", name: "Rosso" }, { id: "#2a6fe0", name: "Electric" },
   { id: "#2a2b30", name: "Carbon" }, { id: "#f0c419", name: "Giallo" }, { id: "#2f9a57", name: "Verde" }, { id: "#a9aeb6", name: "Titanium" },
 ];
 const TRAFFIC_MODELS: VehicleModel[] = ["sedan", "sedan", "coupe", "suv", "suv", "taxi", "van"];
-const DEFAULT_SETTINGS: Settings = { control: "touch", sens: 1, neutral: 0, paint: "#ffffff", name: "Racer" };
+const DEFAULT_SETTINGS: Settings = { control: "touch", sens: 1, neutral: 0, paint: "#ffffff", name: "musti" };
 const blankInput = (): Input => ({ left: false, right: false, up: false, down: false, boost: false, drift: false });
+const makeRaceId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 /* ---------------- audio ---------------- */
 class Sfx {
@@ -78,15 +175,42 @@ function makeGrain(): HTMLCanvasElement {
   return g;
 }
 
-function tintPlayer(img: HTMLImageElement, color: string): HTMLCanvasElement | HTMLImageElement {
-  if (color === "#ffffff" || !img.naturalWidth) return img;
-  const cv = document.createElement("canvas"); cv.width = img.naturalWidth; cv.height = img.naturalHeight;
-  const c = cv.getContext("2d")!;
-  c.drawImage(img, 0, 0);
-  c.globalCompositeOperation = "multiply"; c.fillStyle = color; c.fillRect(0, 0, cv.width, cv.height);
-  c.globalCompositeOperation = "destination-in"; c.drawImage(img, 0, 0);
+
+function tintPlayer(
+  img: HTMLImageElement,
+  color: string
+): HTMLCanvasElement | HTMLImageElement {
+  if (!img.naturalWidth) return img;
+
+  if (color === "#ffffff") return img;
+
+  const cv = document.createElement("canvas");
+  cv.width = img.naturalWidth;
+  cv.height = img.naturalHeight;
+
+  const ctx = cv.getContext("2d");
+  if (!ctx) return img;
+
+  // Preserve the original artwork and transparency.
+  ctx.drawImage(img, 0, 0);
+
+  // Apply a color overlay while keeping the original lighting.
+  ctx.globalCompositeOperation = "source-atop";
+  ctx.globalAlpha = 0.72;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  // Restore the original image's brightness and details.
+  ctx.globalAlpha = 0.30;
+  ctx.globalCompositeOperation = "multiply";
+  ctx.drawImage(img, 0, 0);
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+
   return cv;
 }
+
 
 function readTilt(e: DeviceOrientationEvent) {
   const angle = typeof screen !== "undefined" && screen.orientation ? screen.orientation.angle : 0;
@@ -106,26 +230,61 @@ export function SketchRun() {
   const settingsRef = useRef<Settings>(DEFAULT_SETTINGS);
   const tiltRaw = useRef<number | null>(null);
   const tiltSmooth = useRef(0);
+  const selectedVehicleRef = useRef("musti-gt");
   const playerSprite = useRef<HTMLCanvasElement | HTMLImageElement | null>(null);
   const playerImg = useRef<HTMLImageElement | null>(null);
   const [phase, setPhaseState] = useState<Phase>("menu");
   const [screenName, setScreen] = useState<Screen>("home");
-  const [hud, setHud] = useState<Hud>({ score: 0, speed: 0, lives: MAX_LIVES, boost: 1, heat: 0, drift: 0, traction: 1 });
+  const [hud, setHud] = useState<Hud>({ score: 0, speed: 0, lives: MAX_LIVES, boost: 1, heat: 0, drift: 0, traction: 1, wantedLevel: 0, policeWarning: 0 });
   const [best, setBest] = useState(0);
   const [sound, setSound] = useState(true);
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
   const [tiltStatus, setTiltStatus] = useState<"off" | "on" | "denied" | "unsupported">("off");
   const [board, setBoard] = useState<Entry[]>([]);
-  const [final, setFinal] = useState({ score: 0, newBest: false, distance: 0, time: 0, rank: 0 });
+  const [progression, setProgression] = useState<ProgressionData>(EMPTY_PROGRESSION);
+  const [progressionError, setProgressionError] = useState("");
+  const [final, setFinal] = useState<{
+  score: number;
+  newBest: boolean;
+  distance: number;
+  time: number;
+  rank: number;
+  coinsCollected: number;
+  nearMisses: number;
+  unlockedNow: AchievementId[];
+  progression: ProgressionData;
+  saveError: string;
+} | null>(null);
+  const [ownedVehicles, setOwnedVehicles] = useState<string[]>(["musti-gt"]);
+const [selectedVehicle, setSelectedVehicleState] = useState("musti-gt");
+const [garageBalance, setGarageBalance] = useState<number | null>(null);
+const [garageMessage, setGarageMessage] = useState("");
+const [garageIndex, setGarageIndex] = useState(0);
+const [walletError, setWalletError] = useState("");
+const [upgradeVehicleId, setUpgradeVehicleId] = useState("musti-gt");
+const [upgradeLevels, setUpgradeLevels] = useState<VehicleUpgradeLevels>({
+  ...EMPTY_UPGRADE_LEVELS,
+});
+const [upgradeMessage, setUpgradeMessage] = useState("");
+const [multiplayerRace, setMultiplayerRace] = useState<MultiplayerRaceStart | null>(null);
+const multiplayerRaceRef = useRef<MultiplayerRaceStart | null>(null);
+const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
 
   const world = useRef({
     w: 0, h: 0, roadX: 0, roadW: 0, lanes: 4, laneW: 0,
     px: 0, py: 0, baseY: 0, pvx: 0, pw: 40, ph: 80, heading: 0,
     speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, scroll: 0,
+    boostCapacity: 1,
+    vehiclePerformance: getVehiclePerformance(
+      { maxSpeedMultiplier: 1, accelerationMultiplier: 1, handlingMultiplier: 1 },
+      EMPTY_UPGRADE_LEVELS,
+    ),
+    raceId: "", coinsCollected: 0, nearMisses: 0,
+    rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [] as AchievementId[],
     lives: MAX_LIVES, invuln: 0, boost: 1, boosting: false, boostVis: 0, shake: 0, hitFlash: 0,
     drift: 0, traction: 1, driftCd: 0, driftDir: 0,
-    cars: [] as Car[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[],
-    spawnT: 0, policeT: 6, propT: 0, heat: 0, bonus: 0,
+    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[],
+    spawnT: 0, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 6, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, propT: 0, heat: 0, bonus: 0, walletSaveFailed: false,
   });
 
   const setPhase = useCallback((p: Phase) => { phaseRef.current = p; setPhaseState(p); }, []);
@@ -138,8 +297,119 @@ export function SketchRun() {
     });
   }, []);
 
+  const purchaseOrSelectVehicle = (vehicleId: string) => {
+    const vehicle = VEHICLE_DEFS.find((item) => item.id === vehicleId);
+    if (!vehicle) return;
+
+    const owned = readOwnedVehicles();
+
+    // Already owned: select it without charging the player.
+    if (owned.includes(vehicleId)) {
+      saveSelectedVehicle(vehicleId);
+      setSelectedVehicleState(vehicleId);
+      selectedVehicleRef.current = vehicleId;
+      setGarageMessage(`${vehicle.name} selected!`);
+      return;
+    }
+
+    try {
+      const rawProfile = localStorage.getItem(WALLET_KEY);
+      const profile = rawProfile ? JSON.parse(rawProfile) : null;
+
+      if (
+        !profile ||
+        typeof profile.balance !== "number" ||
+        !Number.isFinite(profile.balance)
+      ) {
+        setGarageMessage("Create your guest profile before buying vehicles.");
+        return;
+      }
+
+      const price = VEHICLE_PRICES[vehicleId] ?? 0;
+
+      if (profile.balance < price) {
+        setGarageBalance(profile.balance);
+        setGarageMessage(
+          `Not enough Jaa'izah. You need ${(price - profile.balance).toLocaleString()} more.`
+        );
+        return;
+      }
+
+      const updatedProfile = {
+        ...profile,
+        balance: profile.balance - price,
+      };
+
+      localStorage.setItem(WALLET_KEY, JSON.stringify(updatedProfile));
+
+      const updatedOwned = [...owned, vehicleId];
+      saveOwnedVehicles(updatedOwned);
+      saveSelectedVehicle(vehicleId);
+
+      setOwnedVehicles(updatedOwned);
+      setSelectedVehicleState(vehicleId);
+      selectedVehicleRef.current = vehicleId;
+      setGarageBalance(updatedProfile.balance);
+      setGarageMessage(`${vehicle.name} purchased and selected!`);
+    } catch {
+      setGarageMessage("Purchase failed. Please try again.");
+    }
+  };
+
+  const chooseUpgradeVehicle = (vehicleId: string) => {
+    if (!ownedVehicles.includes(vehicleId)) {
+      setUpgradeMessage("Only vehicles you own can be upgraded.");
+      return;
+    }
+    setUpgradeVehicleId(vehicleId);
+    setUpgradeLevels(readVehicleUpgrades(vehicleId));
+    setUpgradeMessage("");
+  };
+
+  const buyUpgrade = (category: UpgradeCategory) => {
+    const currentLevel = upgradeLevels[category];
+    try {
+      const result = purchaseVehicleUpgrade(
+        upgradeVehicleId,
+        category,
+        currentLevel,
+      );
+      setGarageBalance(result.balance);
+      if (result.status === "purchased") {
+        setUpgradeLevels(result.levels);
+        setUpgradeMessage(
+          `${UPGRADE_DEFINITIONS[category].title} upgraded to level ${result.levels[category]}.`,
+        );
+      } else if (result.status === "insufficient-funds") {
+        setUpgradeMessage("Not enough Jaa'izah for that upgrade.");
+      } else if (result.status === "max-level") {
+        setUpgradeLevels(result.levels);
+        setUpgradeMessage(`${UPGRADE_DEFINITIONS[category].title} is already maxed.`);
+      } else if (result.status === "stale-level") {
+        setUpgradeLevels(result.levels);
+        setUpgradeMessage("Upgrade details refreshed. Please review the new price.");
+      } else if (result.status === "not-owned") {
+        setUpgradeMessage("Only vehicles you own can be upgraded.");
+      } else {
+        setUpgradeMessage("Create a guest profile before purchasing upgrades.");
+      }
+    } catch (error) {
+      console.error("Could not purchase vehicle upgrade.", error);
+      setUpgradeMessage("Upgrade purchase failed. Check your saved wallet and try again.");
+    }
+  };
+
   useEffect(() => {
-    setBest(Number(localStorage.getItem(BEST_KEY) || localStorage.getItem("sketchrun.best") || 0));
+    const legacyBest = Number(
+      localStorage.getItem(BEST_KEY) || localStorage.getItem("sketchrun.best") || 0,
+    );
+    const savedProgression = readProgression();
+    setBest(
+      Math.max(
+        Number.isSafeInteger(legacyBest) && legacyBest >= 0 ? legacyBest : 0,
+        savedProgression.bestScore,
+      ),
+    );
     if (localStorage.getItem(SOUND_KEY) === "0") { setSound(false); sfx.current.enabled = false; }
     try {
       const s = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SET_KEY) || "{}") } as Settings;
@@ -147,6 +417,20 @@ export function SketchRun() {
       settingsRef.current = s; setSettingsState(s);
     } catch { /* ignore */ }
     try { setBoard(JSON.parse(localStorage.getItem(BOARD_KEY) || "[]")); } catch { /* ignore */ }
+    setProgression(savedProgression);
+    try {
+  const owned = readOwnedVehicles();
+  const selectedId = readSelectedVehicle();
+  setOwnedVehicles(owned);
+  setSelectedVehicleState(selectedId);
+  selectedVehicleRef.current = selectedId;
+  setUpgradeVehicleId(selectedId);
+  setUpgradeLevels(readVehicleUpgrades(selectedId));
+
+  setGarageBalance(readWalletBalance());
+} catch {
+  setGarageBalance(null);
+}
   }, []);
 
   /* tilt */
@@ -186,18 +470,201 @@ export function SketchRun() {
 
   const reset = useCallback(() => {
     const W = world.current;
-    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, lives: MAX_LIVES, invuln: 1.5, boost: 1, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], particles: [], popups: [], skids: [], spawnT: 0.8, policeT: 5, heat: 0, pvx: 0, heading: 0, bonus: 0 });
-    W.px = W.w / 2;
+    const upgradeLevels = readVehicleUpgrades(selectedVehicleRef.current);
+    const vehicleDef = VEHICLE_DEFS.find(
+      (vehicle) => vehicle.id === selectedVehicleRef.current,
+    );
+    W.vehiclePerformance = getVehiclePerformance(
+      {
+        maxSpeedMultiplier: vehicleDef?.maxMul ?? 1,
+        accelerationMultiplier: vehicleDef?.accelMul ?? 1,
+        handlingMultiplier: vehicleDef?.gripMul ?? 1,
+      },
+      upgradeLevels,
+    );
+    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
+    setWalletError("");
+    setProgressionError("");
+    setFinal(null);
+    W.px = multiplayerRaceRef.current
+      ? W.roadX + W.laneW * (multiplayerRaceRef.current.seat + 0.5)
+      : W.w / 2;
     input.current = blankInput(); touch.current = blankInput();
-    setHud({ score: 0, speed: 0, lives: MAX_LIVES, boost: 1, heat: 0, drift: 0, traction: 1 });
+    setHud({ score: 0, speed: 0, lives: MAX_LIVES, boost: W.boost, heat: 0, drift: 0, traction: 1, wantedLevel: 0, policeWarning: 0 });
   }, []);
 
   const start = useCallback(() => { sfx.current.ensure(); reset(); setPhase("playing"); sfx.current.blip(660, 0.12); setTimeout(() => sfx.current.blip(990, 0.18), 120); }, [reset, setPhase]);
+  const startMultiplayerRace = useCallback((race: MultiplayerRaceStart) => {
+    multiplayerRaceRef.current = race;
+    setMultiplayerRace(race);
+    setMultiplayerSyncMessage("");
+    start();
+  }, [start]);
   const togglePause = useCallback(() => {
     if (phaseRef.current === "playing") setPhase("paused");
     else if (phaseRef.current === "paused") { sfx.current.ensure(); setPhase("playing"); }
   }, [setPhase]);
-  const toMenu = useCallback(() => { setScreen("home"); setPhase("menu"); }, [setPhase]);
+  const toMenu = useCallback(() => {
+    const race = multiplayerRaceRef.current;
+    if (race) {
+      try {
+        void getSupabaseClient()
+          .rpc("leave_multiplayer_room", { p_room_id: race.roomId })
+          .then(({ error }) => {
+            if (error) {
+              console.error("Could not leave the multiplayer room.", error);
+              setMultiplayerSyncMessage(`Could not leave online room: ${error.message}`);
+            }
+          });
+      } catch (error) {
+        console.error("Could not connect to leave the multiplayer room.", error);
+        setMultiplayerSyncMessage("Could not connect to leave the online room.");
+      }
+    }
+    multiplayerRaceRef.current = null;
+    setMultiplayerRace(null);
+    world.current.remoteRacers = [];
+    setScreen("home");
+    setPhase("menu");
+  }, [setPhase]);
+
+  useEffect(() => {
+    if (phase !== "playing" || !multiplayerRace) return;
+
+    let active = true;
+    let raceIsActive = true;
+    let userId = "";
+    let sendingPosition = false;
+    let lastSyncError = "";
+    let channel: RealtimeChannel | null = null;
+    const raceWorld = world.current;
+    const setSyncError = (message: string) => {
+      if (message !== lastSyncError) {
+        lastSyncError = message;
+        console.error(message);
+      }
+      setMultiplayerSyncMessage("Online racers disconnected; reconnecting…");
+    };
+
+    try {
+      const supabase = getSupabaseClient();
+      void supabase.auth.getUser().then(({ data, error }) => {
+        if (!active) return;
+        if (error || !data.user) {
+          setSyncError(error?.message ?? "Sign in again to synchronize this race.");
+          return;
+        }
+        userId = data.user.id;
+      });
+
+      const refreshRemoteRacers = async () => {
+        if (!raceIsActive) return;
+        const { data, error } = await supabase.rpc("get_multiplayer_race_state", {
+          p_room_id: multiplayerRace.roomId,
+        });
+        if (!active) return;
+        if (error) {
+          setSyncError(`Could not read online racer positions: ${error.message}`);
+          return;
+        }
+
+        raceWorld.remoteRacers = parseRacePositions(data, userId);
+        lastSyncError = "";
+        setMultiplayerSyncMessage("");
+      };
+
+      channel = supabase
+        .channel(`multiplayer-race-${multiplayerRace.roomId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "multiplayer_race_positions",
+            filter: `room_id=eq.${multiplayerRace.roomId}`,
+          },
+          () => void refreshRemoteRacers(),
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "multiplayer_rooms",
+            filter: `id=eq.${multiplayerRace.roomId}`,
+          },
+          (payload) => {
+            if (payload.new["status"] !== "racing") {
+              raceIsActive = false;
+              raceWorld.remoteRacers = [];
+              setMultiplayerSyncMessage(
+                "The online room ended or its host left. Your local race can continue.",
+              );
+            }
+          },
+        )
+        .subscribe((status) => {
+          if (!active) return;
+          if (status === "SUBSCRIBED") {
+            void refreshRemoteRacers();
+          } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            setMultiplayerSyncMessage("Realtime connection lost; reconnecting…");
+          }
+        });
+
+      const positionTimer = window.setInterval(() => {
+        if (!userId || sendingPosition || !active || !raceIsActive) return;
+        sendingPosition = true;
+        const W = raceWorld;
+        void Promise.resolve(
+          supabase.rpc("update_multiplayer_race_position", {
+            p_room_id: multiplayerRace.roomId,
+            p_lane_ratio: Math.max(0, Math.min(1, (W.px - W.roadX) / W.roadW)),
+            p_distance: W.distance,
+          }),
+        )
+          .then(({ error }) => {
+            if (error && active) {
+              setSyncError(`Could not send online racer position: ${error.message}`);
+            } else if (!error && active) {
+              lastSyncError = "";
+            }
+          })
+          .finally(() => {
+            sendingPosition = false;
+          });
+      }, 200);
+      const refreshTimer = window.setInterval(() => {
+        if (raceIsActive) void refreshRemoteRacers();
+      }, 1000);
+      const maintenanceTimer = window.setInterval(() => {
+        if (!raceIsActive || !active) return;
+        void Promise.resolve(supabase.rpc("cleanup_expired_multiplayer_rooms")).then(({ error }) => {
+          if (error && active) {
+            setSyncError(`Could not refresh the online room: ${error.message}`);
+          }
+        });
+      }, 10000);
+
+      return () => {
+        active = false;
+        window.clearInterval(positionTimer);
+        window.clearInterval(refreshTimer);
+        window.clearInterval(maintenanceTimer);
+        raceWorld.remoteRacers = [];
+        if (channel) void supabase.removeChannel(channel);
+      };
+    } catch (error) {
+      setSyncError(
+        error instanceof Error ? error.message : "Multiplayer synchronization is unavailable.",
+      );
+      return () => {
+        active = false;
+        raceWorld.remoteRacers = [];
+        if (channel) void channel.unsubscribe();
+      };
+    }
+  }, [multiplayerRace, phase]);
   const toggleSound = useCallback(() => {
     setSound((s) => { const n = !s; sfx.current.enabled = n; localStorage.setItem(SOUND_KEY, n ? "1" : "0"); if (n) sfx.current.ensure(); return n; });
   }, []);
@@ -235,58 +702,274 @@ export function SketchRun() {
     const spark = (x: number, y: number, n: number, color: string, spd = 260) => {
       for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, s = Math.random() * spd; W.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0, max: 0.4 + Math.random() * 0.5, color, size: 1.5 + Math.random() * 2.5 }); }
     };
-    const pop = (text: string, color = "#ffffff") => W.popups.push({ text, x: W.px, y: W.py - W.ph * 0.8, life: 0, color });
+    const pop = (text: string, color = "#ffffff") => {
+      const stackOffset = W.popups.filter((popup) => popup.life < 0.3).length * 18;
+      W.popups.push({
+        text,
+        x: W.px,
+        y: W.py - W.ph * 0.8 - stackOffset,
+        life: 0,
+        color,
+      });
+    };
+
+    const showPursuitEvents = (events: PursuitEvent[]) => {
+      for (const event of events) {
+        if (event === "fallback-alert") {
+          W.policeWarning = 3;
+          pop("POLICE ALERT · WANTED 1", "#ffb85c");
+          sfx.current.blip(760, 0.2, "triangle", 0.06);
+        } else if (event === "pursuit-started") {
+          W.policeWarning = 3.5;
+          W.policeT = 0.35;
+          pop("PURSUIT STARTED · WANTED 2", "#ff717d");
+          sfx.current.blip(980, 0.16, "triangle", 0.08);
+        } else if (
+          event === "wanted-level-raised" &&
+          W.pursuit.wantedLevel === 3
+        ) {
+          W.policeWarning = 3.5;
+          W.policeT = Math.min(W.policeT, 0.5);
+          pop("HIGH PRESSURE · WANTED 3", "#ff717d");
+          sfx.current.blip(1120, 0.18, "triangle", 0.08);
+        } else if (event === "escaped") {
+          W.cars = W.cars.filter((car) => car.kind !== "police");
+          W.policeT = 1;
+          W.heat = 0;
+          W.policeWarning = 2;
+          pop("PURSUIT ESCAPED", "#8ef0b0");
+          sfx.current.blip(660, 0.16, "sine", 0.06);
+        } else if (
+          event === "wanted-level-raised" &&
+          W.pursuit.wantedLevel === 1
+        ) {
+          W.policeWarning = 2.5;
+          pop("POLICE ALERT · WANTED 1", "#ffb85c");
+          sfx.current.blip(760, 0.2, "triangle", 0.06);
+        }
+      }
+    };
+
+    const registerPursuitIncident = (
+      kind: PursuitIncidentKind,
+      entityId: string,
+    ) => {
+      const result = updatePursuit(W.pursuit, 0, W.time, {
+        id: `${kind}:${entityId}`,
+        kind,
+      });
+      W.pursuit = result.state;
+      showPursuitEvents(result.events);
+    };
+
+    const rewardCoins = (
+      amount: number,
+      kind: RewardEventKind,
+      entityId?: string,
+    ) => {
+      if (W.walletSaveFailed) return null;
+      try {
+        const eventId =
+          entityId ??
+          `${W.raceId}:${kind}:${W.rewardEventSequence++}`;
+        const result = recordRewardEvent(amount, kind, eventId);
+        setGarageBalance(result.balance);
+        setProgression(result.progression);
+        setWalletError("");
+        if (result.duplicate) return result.balance;
+        for (const id of result.unlockedNow) {
+          if (!W.unlockedAchievementsThisRace.includes(id)) {
+            W.unlockedAchievementsThisRace.push(id);
+          }
+          const achievement = ACHIEVEMENTS.find((item) => item.id === id);
+          if (achievement) pop(`ACHIEVEMENT · ${achievement.title}`, "#ffe36e");
+        }
+        return result.balance;
+      } catch (error) {
+        W.walletSaveFailed = true;
+        setWalletError("Coin reward could not be saved. Check browser storage and try another race.");
+        console.error("Could not save coin reward to the guest wallet.", error);
+        return null;
+      }
+    };
 
     const finish = () => {
+      if (phaseRef.current !== "playing") return;
       const score = scoreFor(W.distance, W.time) + Math.floor(W.bonus);
-      const prev = Number(localStorage.getItem(BEST_KEY) || 0); const newBest = score > prev;
+      const storedBest = Number(
+        localStorage.getItem(BEST_KEY) ||
+          localStorage.getItem("sketchrun.best") ||
+          0,
+      );
+      const prev = Number.isSafeInteger(storedBest) && storedBest >= 0 ? storedBest : 0;
+      let savedProgression = EMPTY_PROGRESSION;
+      let newBest = false;
+      let unlockedNow: AchievementId[] = [];
+      let saveError = "";
+      let balanceAfterProgression: number | null = null;
+      try {
+        savedProgression = readProgression();
+        const completion = completeRace(W.raceId, {
+          score,
+          distance: W.distance,
+          time: W.time,
+        }, prev);
+        savedProgression = completion.progression;
+        unlockedNow = Array.from(
+          new Set([...W.unlockedAchievementsThisRace, ...completion.unlockedNow]),
+        );
+        balanceAfterProgression = completion.balance;
+        newBest = completion.newBest;
+        setProgression(savedProgression);
+        setProgressionError("");
+        if (completion.duplicate) {
+          saveError = "This race was already recorded; its progression rewards were not added again.";
+        }
+      } catch (error) {
+        saveError = "Race progression could not be saved. Your in-race wallet rewards remain available.";
+        setProgressionError(saveError);
+        console.error("Could not save race progression.", error);
+      }
       if (newBest) { localStorage.setItem(BEST_KEY, String(score)); setBest(score); }
+      else setBest(Math.max(prev, savedProgression.bestScore));
+      if (balanceAfterProgression !== null) setGarageBalance(balanceAfterProgression);
       let list: Entry[] = [];
       try { list = JSON.parse(localStorage.getItem(BOARD_KEY) || "[]"); } catch { list = []; }
-      const entry: Entry = { name: settingsRef.current.name || "Racer", score, time: W.time, distance: W.distance, date: Date.now() };
+      const entry: Entry = { name: settingsRef.current.name || "musti", score, time: W.time, distance: W.distance, date: Date.now() };
       list.push(entry); list.sort((a, b) => b.score - a.score); list = list.slice(0, 10);
       localStorage.setItem(BOARD_KEY, JSON.stringify(list)); setBoard(list);
       const rank = list.indexOf(entry) + 1;
-      setFinal({ score, newBest, distance: W.distance, time: W.time, rank });
+      setFinal({
+        score,
+        newBest,
+        distance: W.distance,
+        time: W.time,
+        rank,
+        coinsCollected: W.coinsCollected,
+        nearMisses: W.nearMisses,
+        unlockedNow,
+        progression: savedProgression,
+        saveError,
+      });
       phaseRef.current = "over"; setPhaseState("over");
+      W.pursuit = createPursuitState();
+      W.policeWarning = 0;
+      W.policeT = 0;
+      W.heat = 0;
+      W.cars = W.cars.filter((car) => car.kind !== "police");
+      if (unlockedNow.length > 0) {
+        const achievement = ACHIEVEMENTS.find(({ id }) => id === unlockedNow[0]);
+        if (achievement) pop(`ACHIEVEMENT · ${achievement.title}`, "#ffe36e");
+      }
       sfx.current.blip(180, 0.6, "sawtooth", 0.15);
     };
 
-    const hit = (car: Car) => {
+    const hit = (
+      car: Car,
+      message = car.kind === "police" ? "POLICE HIT · -1 LIFE" : "CRASH · -1 LIFE",
+      incidentKind?: PursuitIncidentKind,
+    ) => {
       if (W.invuln > 0) return;
+      if (incidentKind || car.kind === "traffic") {
+        registerPursuitIncident(
+          incidentKind ?? "traffic-collision",
+          car.id ?? `${W.raceId}:collision:${W.entitySequence++}`,
+        );
+      }
       W.lives -= 1; W.invuln = 2; W.shake = 0.55; W.hitFlash = 1; W.speed *= 0.5; W.drift = 0;
       spark(W.px, W.py - W.ph * 0.3, 40, "#ffd27a", 380); spark(W.px, W.py, 20, "#ffffff", 200);
+      pop(message, "#ff7373");
       sfx.current.crash();
       if (car.kind === "police") car.y += W.ph * 1.6; else { car.y -= W.ph * 0.6; car.vy = W.speed * 0.2; }
       if (W.lives <= 0) finish();
     };
 
-    const spawnPolice = (level: number) => {
-      const playerLane = Math.max(0, Math.min(W.lanes - 1, Math.floor((W.px - W.roadX) / W.laneW)));
-      const ahead = level >= 2 && Math.random() < 0.3;
-      const offs = ahead ? (Math.random() < 0.5 ? -1 : 1) : Math.floor(Math.random() * 3) - 1;
-      const lane = Math.max(0, Math.min(W.lanes - 1, playerLane + offs));
+    const spawnPolice = (difficulty: ReturnType<typeof raceDifficulty>) => {
+      const ahead = Math.random() < difficulty.aheadPoliceChance;
       const w = W.pw * MODEL_WIDTH.police, h = w * MODEL_RATIO.police;
-      W.cars.push({ kind: "police", model: "police", ahead, x: W.roadX + W.laneW * (lane + 0.5), y: ahead ? -h : W.h + h, w, h, vy: ahead ? W.cruise * 0.55 : 0, color: "#111", seed: Math.random() * 100 });
+      const spawnY = ahead ? -h * 3 : W.h + h * 2.5;
+      const blocked = new Set<number>();
+      const blockIfNearSpawn = (x: number, y: number, height: number) => {
+        if (Math.abs(y - spawnY) < Math.max(h, height) * 2.5) {
+          const lane = Math.floor((x - W.roadX) / W.laneW);
+          if (lane >= 0 && lane < W.lanes) blocked.add(lane);
+        }
+      };
+      for (const car of W.cars) blockIfNearSpawn(car.x, car.y, car.h);
+      for (const pickup of W.pickups) blockIfNearSpawn(pickup.x, pickup.y, W.laneW);
+      for (const coin of W.coins) blockIfNearSpawn(coin.x, coin.y, W.laneW);
+      for (const hazard of W.hazards) blockIfNearSpawn(hazard.x, hazard.y, hazard.h);
+      if (ahead) {
+        blocked.add(
+          Math.max(0, Math.min(W.lanes - 1, Math.floor((W.px - W.roadX) / W.laneW))),
+        );
+      }
+      const lane = pickPoliceLane(W.lanes, blocked, Math.random);
+      if (lane === null) return false;
+      W.cars.push({ kind: "police", model: "police", ahead, x: W.roadX + W.laneW * (lane + 0.5), y: spawnY, w, h, vy: ahead ? W.cruise * 0.55 : 0, color: "#111", seed: Math.random() * 100 });
       sfx.current.blip(880, 0.2, "triangle", 0.06);
+      return true;
     };
 
     const update = (dt: number) => {
       const S = settingsRef.current;
+      const { maxSpeed: vehicleMaxSpeed, accelerationMultiplier: accelMul, handlingMultiplier: gripMul } = W.vehiclePerformance;
+
       const k = input.current, tc = touch.current;
       const inp = { left: k.left || tc.left, right: k.right || tc.right, up: k.up || tc.up, down: k.down || tc.down, boost: k.boost || tc.boost };
       W.time += dt;
-      const level = 1 + Math.floor(W.time / 35);
+      const difficulty = raceDifficulty(W.time);
+      W.policeWarning = Math.max(0, W.policeWarning - dt);
+      const pursuitUpdate = updatePursuit(W.pursuit, dt, W.time);
+      W.pursuit = pursuitUpdate.state;
+      showPursuitEvents(pursuitUpdate.events);
+      if (difficulty.level > W.difficultyLevel) {
+        W.difficultyLevel = difficulty.level;
+        W.policeWarning = 4.5;
+        pop(`POLICE PRESSURE RISING · ROAD LEVEL ${difficulty.level}`, "#ffb85c");
+        sfx.current.blip(980, 0.16, "triangle", 0.08);
+      }
       // ---- speed ----
-      W.cruise = Math.min(MAX_SPEED * 0.62, BASE_SPEED + W.time * 6);
+      W.cruise = Math.min(
+        vehicleMaxSpeed * 0.62,
+        BASE_SPEED + W.time * 6 * (vehicleMaxSpeed / MAX_SPEED),
+      );
+
       let target = W.cruise * 1.05;
-      if (inp.up) target = Math.min(MAX_SPEED * 0.85, W.cruise * 1.35);
-      if (inp.down) target = W.cruise * 0.4;
+
+      if (inp.up) {
+        target = Math.min(vehicleMaxSpeed * 0.85, W.cruise * 1.35);
+      }
+
+      if (inp.down) {
+        target = W.cruise * 0.4;
+      }
+
       W.boosting = inp.boost && W.boost > 0.02 && !inp.down;
-      if (W.boosting) { target = Math.min(MAX_SPEED, W.cruise * 1.35 + 420); W.boost = Math.max(0, W.boost - dt * 0.38); }
-      else W.boost = Math.min(1, W.boost + dt * 0.07);
-      const rate = target > W.speed ? accelRate(W.speed, W.boosting) : inp.down ? 3.2 : 0.9;
-      W.speed += (target - W.speed) * (1 - Math.exp(-rate * dt));
+
+      if (W.boosting) {
+        target = Math.min(
+          vehicleMaxSpeed,
+          W.cruise * 1.35 + 420
+        );
+        W.boost = Math.max(0, W.boost - dt * 0.38);
+      } else {
+        W.boost = Math.min(
+          W.boostCapacity,
+          W.boost + dt * 0.07 * W.boostCapacity,
+        );
+      }
+
+      const rate =
+        target > W.speed
+          ? accelRate(W.speed, W.boosting, vehicleMaxSpeed) * accelMul
+          : inp.down
+            ? 3.2 * gripMul
+            : 0.9;
+
+      W.speed +=
+        (target - W.speed) * (1 - Math.exp(-rate * dt));
+
       W.boostVis += ((W.boosting ? 1 : 0) - W.boostVis) * (1 - Math.exp(-5 * dt));
       W.py = W.baseY + W.h * 0.05 * W.boostVis; // camera pulls back on nitro
       // ---- steering ----
@@ -296,7 +979,7 @@ export function SketchRun() {
         tiltSmooth.current += (raw - tiltSmooth.current) * (1 - Math.exp(-12 * dt));
         steer = tiltSmooth.current;
       }
-      const sf = W.speed / MAX_SPEED;
+      const sf = W.speed / vehicleMaxSpeed;
       W.driftCd = Math.max(0, W.driftCd - dt);
       const wantDrift = Math.abs(steer) > 0.8 && sf > 0.42 && W.traction > 0.12 && W.driftCd <= 0;
       if (wantDrift && W.drift < 0.05) W.driftDir = Math.sign(steer);
@@ -307,7 +990,7 @@ export function SketchRun() {
         W.bonus += W.drift * W.speed * dt * 0.06;
         W.speed *= Math.exp(-0.12 * W.drift * dt);
       } else W.traction = Math.min(1, W.traction + dt * 0.4);
-      const grip = 11 - 8.5 * W.drift;
+      const grip = (11 - 8.5 * W.drift) * gripMul;
       const latTarget = steer * (330 + W.speed * 0.32) * (1 + 0.2 * W.drift);
       W.pvx += (latTarget - W.pvx) * (1 - Math.exp(-grip * dt));
       W.px += W.pvx * dt;
@@ -335,52 +1018,227 @@ export function SketchRun() {
       // roadside props
       W.propT -= dy;
       if (W.propT <= 0) {
+        const isCity = Math.random() < sceneryZoneBlend(W.distance);
         const r = Math.random();
-        const kind: Prop["kind"] = r < 0.45 ? "lamp" : r < 0.6 ? "sign" : r < 0.82 ? "building" : "tree";
+        const kind: Prop["kind"] = isCity
+          ? r < 0.38 ? "building" : r < 0.64 ? "lamp" : r < 0.82 ? "sign" : "barrier"
+          : r < 0.48 ? "tree" : r < 0.73 ? "shrub" : r < 0.88 ? "barrier" : "sign";
         W.props.push({ kind, side: Math.random() < 0.5 ? -1 : 1, y: -140, seed: Math.random() });
+        if (W.props.length > 40) W.props.splice(0, W.props.length - 40);
         W.propT = 120 + Math.random() * 160;
       }
       for (const p of W.props) p.y += dy;
       W.props = W.props.filter((p) => p.y < W.h + 200);
+
+      const blockedPickupLanes = () => {
+        const blocked = new Set<number>();
+        const spawnY = -W.laneW * 0.6;
+        const block = (x: number, y: number, halfHeight: number) => {
+          if (Math.abs(y - spawnY) < Math.max(W.laneW * 0.7, halfHeight + W.laneW * 0.25)) {
+            const lane = Math.floor((x - W.roadX) / W.laneW);
+            if (lane >= 0 && lane < W.lanes) blocked.add(lane);
+          }
+        };
+        for (const car of W.cars) block(car.x, car.y, car.h / 2);
+        for (const pickup of W.pickups) block(pickup.x, pickup.y, W.laneW * 0.35);
+        for (const coin of W.coins) block(coin.x, coin.y, W.laneW * 0.2);
+        for (const hazard of W.hazards) block(hazard.x, hazard.y, hazard.h / 2);
+        return blocked;
+      };
+
+      // Reserve only lanes with an object close enough to collide at the spawn row.
+      W.pickupT -= dt;
+      if (W.pickupT <= 0 && W.pickups.length < 6) {
+        const pattern = generatePickupPattern(
+          W.lanes,
+          blockedPickupLanes(),
+          Math.random,
+          "nitro",
+        );
+        const remainingSlots = Math.max(0, 6 - W.pickups.length);
+        const accepted = pattern.slice(0, remainingSlots);
+        if (accepted.length > 0) {
+          for (const placement of accepted) {
+            W.pickups.push({
+              id: `${W.raceId}:nitro:${W.entitySequence++}`,
+              x: W.roadX + W.laneW * (placement.lane + 0.5),
+              y: -W.laneW * (0.6 + placement.row * 1.35),
+            });
+          }
+        }
+        const interval = PICKUP_PATTERN_INTERVALS.nitro;
+        W.pickupT =
+          accepted.length > 0
+            ? interval.min + Math.random() * (interval.max - interval.min)
+            : 0.45;
+      }
+      for (const pickup of W.pickups) pickup.y += dy;
+
+      W.coinT -= dt;
+      if (W.coinT <= 0 && W.coins.length < 12) {
+        const pattern = generateCoinNitroFormation(
+          W.lanes,
+          blockedPickupLanes(),
+          Math.random,
+        );
+        const acceptedCoins = pattern.coins.slice(0, Math.max(0, 12 - W.coins.length));
+        const acceptedNitro = pattern.nitro.slice(0, Math.max(0, 6 - W.pickups.length));
+        for (const placement of acceptedCoins) {
+            W.coins.push({
+              id: `${W.raceId}:coin:${W.entitySequence++}`,
+              x: W.roadX + W.laneW * (placement.lane + 0.5),
+              y: -W.laneW * (0.6 + placement.row * 1.35),
+            });
+        }
+        for (const placement of acceptedNitro) {
+          W.pickups.push({
+            id: `${W.raceId}:nitro:${W.entitySequence++}`,
+            x: W.roadX + W.laneW * (placement.lane + 0.5),
+            y: -W.laneW * (0.6 + placement.row * 1.35),
+          });
+        }
+        const interval = PICKUP_PATTERN_INTERVALS.coin;
+        W.coinT =
+          acceptedCoins.length > 0 || acceptedNitro.length > 0
+            ? interval.min + Math.random() * (interval.max - interval.min)
+            : 0.35;
+      }
+      for (const coin of W.coins) coin.y += dy;
+
+      W.hazardT -= dt;
+      if (W.hazardT <= 0 && W.hazards.length < 2) {
+        const blocked = new Set<number>();
+        for (const car of W.cars) {
+          if (car.y > -W.ph * 4 && car.y < W.ph * 3) {
+            blocked.add(Math.floor((car.x - W.roadX) / W.laneW));
+          }
+        }
+        for (const pickup of W.pickups) {
+          if (pickup.y > -W.ph * 4 && pickup.y < W.ph * 3) {
+            blocked.add(Math.floor((pickup.x - W.roadX) / W.laneW));
+          }
+        }
+        for (const coin of W.coins) {
+          if (coin.y > -W.ph * 4 && coin.y < W.ph * 3) {
+            blocked.add(Math.floor((coin.x - W.roadX) / W.laneW));
+          }
+        }
+        for (const hazard of W.hazards) {
+          if (hazard.y > -W.ph * 4 && hazard.y < W.ph * 3) {
+            blocked.add(Math.floor((hazard.x - W.roadX) / W.laneW));
+          }
+        }
+        const lane = pickLane(W.lanes, blocked, Math.random);
+        if (lane !== null) {
+          const kind = Math.random() < 0.55 ? "cone" : "debris";
+          const width = W.laneW * (kind === "cone" ? 0.3 : 0.44);
+          W.hazards.push({
+            id: `${W.raceId}:hazard:${W.entitySequence++}`,
+            kind,
+            x: W.roadX + W.laneW * (lane + 0.5),
+            y: -W.laneW * 0.7,
+            w: width,
+            h: width * (kind === "cone" ? 1.15 : 0.55),
+          });
+        }
+        W.hazardT = 6 + Math.random() * 2.5;
+      }
+      for (const hazard of W.hazards) hazard.y += dy;
 
       // traffic spawn (fair: always leave a lane open near the top)
       W.spawnT -= dt;
       if (W.spawnT <= 0) {
         const blocked = new Set<number>();
         for (const car of W.cars) if (car.y < W.ph * 3) blocked.add(Math.floor((car.x - W.roadX) / W.laneW));
+        for (const pickup of W.pickups) {
+          if (pickup.y < W.ph * 3 && pickup.y > -W.ph * 4) {
+            blocked.add(Math.floor((pickup.x - W.roadX) / W.laneW));
+          }
+        }
+        for (const coin of W.coins) {
+          if (coin.y < W.ph * 3 && coin.y > -W.ph * 4) {
+            blocked.add(Math.floor((coin.x - W.roadX) / W.laneW));
+          }
+        }
+        for (const hazard of W.hazards) {
+          if (hazard.y < W.ph * 3 && hazard.y > -W.ph * 4) {
+            blocked.add(Math.floor((hazard.x - W.roadX) / W.laneW));
+          }
+        }
         const lane = pickLane(W.lanes, blocked, Math.random);
         if (lane !== null) {
           const model = TRAFFIC_MODELS[Math.floor(Math.random() * TRAFFIC_MODELS.length)] ?? "sedan";
           const cw = W.pw * MODEL_WIDTH[model], ch = cw * MODEL_RATIO[model];
-          W.cars.push({ kind: "traffic", model, x: W.roadX + W.laneW * (lane + 0.5), y: -ch, w: cw, h: ch, vy: (model === "van" ? 90 : 120) + Math.random() * 130, color: PAINTS[Math.floor(Math.random() * PAINTS.length)] ?? "#b9bec6", seed: Math.random() * 100 });
+          W.cars.push({ id: `${W.raceId}:traffic:${W.entitySequence++}`, kind: "traffic", model, x: W.roadX + W.laneW * (lane + 0.5), y: -ch, w: cw, h: ch, vy: (model === "van" ? 90 : 120) + Math.random() * 130, color: PAINTS[Math.floor(Math.random() * PAINTS.length)] ?? "#b9bec6", seed: Math.random() * 100 });
         }
-        const density = Math.min(1, W.time / 90);
-        W.spawnT = (0.95 - density * 0.5) * (BASE_SPEED / Math.max(W.speed, 150)) * (0.7 + Math.random() * 0.6) * 1.6;
+        W.spawnT = (0.95 - difficulty.trafficDensity * 0.38) * (BASE_SPEED / Math.max(W.speed, 150)) * (0.7 + Math.random() * 0.6) * 1.6;
       }
       // police spawn – escalating pressure
-      W.policeT -= dt;
+      if (W.pursuit.wantedLevel >= 2) W.policeT -= dt;
       const policeCount = W.cars.filter((c) => c.kind === "police").length;
-      if (W.policeT <= 0 && policeCount < Math.min(4, level)) { spawnPolice(level); W.policeT = Math.max(3, 8 - level) + Math.random() * 4; }
+      const policeLimit = W.pursuit.wantedLevel >= 3 ? 2 : 1;
+      if (
+        W.pursuit.wantedLevel >= 2 &&
+        W.policeT <= 0 &&
+        policeCount < policeLimit
+      ) {
+        W.policeT = spawnPolice(difficulty)
+          ? difficulty.policeInterval + Math.random() * 2
+          : 0.75;
+      } else if (
+        W.pursuit.wantedLevel >= 2 &&
+        W.policeT <= 0 &&
+        policeCount >= policeLimit
+      ) {
+        W.policeT = difficulty.policeInterval + Math.random() * 2;
+      }
 
       let heat = 0;
       const player = { x: W.px, y: W.py, w: W.pw, h: W.ph };
       for (const car of W.cars) {
         if (car.kind === "traffic") {
           car.y += (W.speed - car.vy) * dt;
-          if (!car.nearMiss && car.y > W.py && car.y < W.py + W.ph && Math.abs(car.x - W.px) < W.pw * 1.3 && Math.abs(car.x - W.px) > W.pw * 0.82) {
-            car.nearMiss = true; W.bonus += 50; W.boost = Math.min(1, W.boost + 0.08); W.shake = Math.max(W.shake, 0.1);
-            pop("NEAR MISS +50", "#7fd4ff"); sfx.current.blip(1320, 0.06, "square", 0.04);
+          if (claimNearMiss(car, player, car)) {
+            W.nearMisses += 1;
+            W.bonus += 50; W.boost = Math.min(W.boostCapacity, W.boost + 0.08 * W.boostCapacity); W.shake = Math.max(W.shake, 0.1);
+            const reward = rewardCoins(
+              NEAR_MISS_COIN_REWARD,
+              "near-miss",
+              `${W.raceId}:near-miss:${car.id ?? W.rewardEventSequence++}`,
+            );
+            registerPursuitIncident(
+              "near-miss",
+              car.id ?? `${W.raceId}:near-miss:${W.entitySequence++}`,
+            );
+            pop(reward === null ? "NEAR MISS +50" : `NEAR MISS +50 · +${NEAR_MISS_COIN_REWARD} COINS`, "#7fd4ff");
+            sfx.current.blip(1320, 0.06, "square", 0.04);
           }
         } else {
-          let pursuit = Math.max(W.cruise * 1.1, W.speed * 0.98) + 40 + level * 18;
+          let pursuit = Math.max(
+            W.cruise * (1.04 + difficulty.pressure * 0.05),
+            W.speed * (0.94 + difficulty.pressure * 0.06),
+          ) + 18 + difficulty.pressure * 30;
           if (W.boosting) pursuit *= 0.82;
           if (car.ahead) { car.y += (W.speed - car.vy) * dt; if (car.y > W.py - W.ph * 3) car.ahead = false; }
           else { car.y += (W.speed - pursuit) * dt; car.y = Math.max(car.y, W.py - W.ph * 2.2); }
           // lateral: match lane from distance, ram when alongside
-          const close = Math.abs(car.y - W.py) < W.ph * 2.5;
+          const close = Math.abs(car.y - W.py) < W.ph * 3.5;
           const laneX = W.roadX + W.laneW * (Math.floor((W.px - W.roadX) / W.laneW) + 0.5);
-          const tx = close ? W.px : laneX;
-          const dx = tx - car.x; car.x += Math.sign(dx) * Math.min(Math.abs(dx), (110 + level * 25) * dt);
+          let tx = laneX;
+          if (close) {
+            const safeOffset = (W.pw + car.w) * 0.62;
+            const minPoliceX = W.roadX + car.w / 2;
+            const maxPoliceX = W.roadX + W.roadW - car.w / 2;
+            const left = Math.max(minPoliceX, W.px - safeOffset);
+            const right = Math.min(maxPoliceX, W.px + safeOffset);
+            const preferred = car.x < W.px ? left : right;
+            const alternative = car.x < W.px ? right : left;
+            tx =
+              Math.abs(preferred - W.px) > Math.abs(alternative - W.px)
+                ? preferred
+                : alternative;
+          }
+          const dx = tx - car.x; car.x += Math.sign(dx) * Math.min(Math.abs(dx), difficulty.policeSteerSpeed * dt);
           car.x = Math.max(W.roadX + car.w / 2, Math.min(W.roadX + W.roadW - car.w / 2, car.x));
           heat = Math.max(heat, Math.max(0, 1 - Math.abs(car.y - W.py) / (W.h * 0.6)));
           for (const o of W.cars) if (o !== car && o.kind === "traffic" && overlaps(car, o)) {
@@ -391,6 +1249,105 @@ export function SketchRun() {
       }
       W.heat += (heat - W.heat) * (1 - Math.exp(-4 * dt));
       W.cars = W.cars.filter((c) => c.y < W.h + c.h * 3 + (c.kind === "police" ? 200 : 0) && c.y > -c.h * 4);
+
+      for (let i = W.pickups.length - 1; i >= 0; i--) {
+        const pickup = W.pickups[i];
+        if (!pickup) continue;
+        const pickupSize = W.laneW * 0.5;
+        if (
+          overlaps(player, { x: pickup.x, y: pickup.y, w: pickupSize, h: pickupSize * 1.45 }) &&
+          claimPickupOnce(pickup)
+        ) {
+          W.pickups.splice(i, 1);
+          const previousBoost = W.boost;
+          W.boost = pickupBoost(
+            W.boost,
+            NITRO_PICKUP_AMOUNT * W.boostCapacity,
+            W.boostCapacity,
+          );
+          const restored = Math.round(
+            ((W.boost - previousBoost) / W.boostCapacity) * 100,
+          );
+          spark(pickup.x, pickup.y, 20, "#59dcff", 220);
+          pop(restored > 0 ? `NITRO +${restored}%` : "NITRO FULL", "#72e7ff");
+          sfx.current.blip(1040, 0.09, "sine", 0.08);
+          sfx.current.blip(1480, 0.13, "sine", 0.06);
+          continue;
+        }
+      }
+      W.pickups = W.pickups.filter((pickup) => pickup.y < W.h + W.laneW);
+
+      for (let i = W.hazards.length - 1; i >= 0; i--) {
+        const hazard = W.hazards[i];
+        if (!hazard) continue;
+        if (claimNearMiss(hazard, player, hazard)) {
+          W.nearMisses += 1;
+          const reward = rewardCoins(
+            NEAR_MISS_COIN_REWARD,
+            "near-miss",
+            `${W.raceId}:near-miss:${hazard.id ?? W.rewardEventSequence++}`,
+          );
+          pop(
+            reward === null
+              ? "HAZARD DODGED"
+              : `HAZARD DODGED · +${NEAR_MISS_COIN_REWARD} COINS`,
+            "#ffbf66",
+          );
+          registerPursuitIncident(
+            "near-miss",
+            hazard.id ?? `${W.raceId}:hazard-near-miss:${W.entitySequence++}`,
+          );
+          spark(hazard.x, hazard.y, 10, "#ffbf66", 180);
+          sfx.current.blip(1180, 0.08, "sine", 0.07);
+        }
+        if (overlaps(player, hazard)) {
+          W.hazards.splice(i, 1);
+          hit({
+            kind: "traffic",
+            x: hazard.x,
+            y: hazard.y,
+            w: hazard.w,
+            h: hazard.h,
+            vy: W.speed * 0.2,
+            color: "#f97316",
+            seed: 0,
+            id: hazard.id ?? `${W.raceId}:hazard-collision:${W.entitySequence++}`,
+          }, "ROAD HAZARD · -1 LIFE", "hazard-collision");
+          if (phaseRef.current !== "playing") return;
+        }
+      }
+      W.hazards = W.hazards.filter(
+        (hazard) => hazard.y > -W.laneW && hazard.y < W.h + W.laneW,
+      );
+
+      for (let i = W.coins.length - 1; i >= 0; i--) {
+        const coin = W.coins[i];
+        if (!coin) continue;
+        if (overlaps(player, {
+          x: coin.x,
+          y: coin.y,
+          w: W.laneW * 0.38,
+          h: W.laneW * 0.38,
+        }) && claimPickupOnce(coin)) {
+          W.coins.splice(i, 1);
+          const balance = rewardCoins(
+            COIN_REWARD,
+            "road-coin",
+            coin.id ?? `${W.raceId}:coin:${W.rewardEventSequence++}`,
+          );
+          if (balance !== null) {
+            W.coinsCollected += 1;
+            spark(coin.x, coin.y, 28, "#ffd84a", 300);
+            spark(coin.x, coin.y, 12, "#fff2b2", 180);
+            pop(`+${COIN_REWARD} COINS`, "#ffe36e");
+            sfx.current.blip(1240, 0.08, "sine", 0.09);
+            sfx.current.blip(1660, 0.12, "sine", 0.07);
+          }
+        }
+      }
+      W.coins = W.coins.filter(
+        (coin) => coin.y > -W.laneW && coin.y < W.h + W.laneW,
+      );
 
       // exhaust / nitro flame
       if (W.boosting || Math.random() < 0.3) {
@@ -434,12 +1391,152 @@ export function SketchRun() {
         c.strokeStyle = "#5a5d63"; c.lineWidth = 3; c.beginPath(); c.moveTo(base, p.y); c.lineTo(base + arm, p.y); c.stroke();
         c.fillStyle = "#6b6e74"; c.beginPath(); c.arc(base, p.y, 4, 0, Math.PI * 2); c.fill();
         c.fillStyle = "#fff1c9"; c.fillRect(base + arm - 4, p.y - 2, 8, 4);
+      } else if (p.kind === "shrub") {
+        if (verge < 24) return;
+        const x = p.side < 0 ? edge - 20 - p.seed * (verge - 30) : edge + 20 + p.seed * (verge - 30);
+        c.fillStyle = "#253d2b";
+        c.beginPath();
+        c.ellipse(x, p.y, 17, 9, 0, 0, Math.PI * 2);
+        c.fill();
+        c.fillStyle = "#36553a";
+        c.beginPath();
+        c.ellipse(x - 5, p.y - 3, 8, 5, 0, 0, Math.PI * 2);
+        c.fill();
+      } else if (p.kind === "barrier") {
+        const x = p.side < 0 ? Math.max(2, edge - 34) : Math.min(w - 32, edge + 18);
+        c.fillStyle = "#6d7278";
+        c.fillRect(x, p.y - 5, 16, 10);
+        c.fillStyle = "#c7c8c5";
+        c.fillRect(x, p.y - 4, 16, 2);
+        c.fillStyle = "#e6a83e";
+        c.fillRect(x + (p.seed > 0.5 ? 8 : 2), p.y - 1, 5, 3);
+        c.fillStyle = "#555a60";
+        c.fillRect(x + 2, p.y + 5, 3, 8);
+        c.fillRect(x + 11, p.y + 5, 3, 8);
       } else {
         const x = p.side < 0 ? Math.max(2, edge - 42) : Math.min(w - 40, edge + 4);
         c.fillStyle = "#1f6b3d"; c.fillRect(x, p.y, 38, 20);
         c.strokeStyle = "#e9e9e4"; c.lineWidth = 1; c.strokeRect(x + 2, p.y + 2, 34, 16);
         c.fillStyle = "#e9e9e4"; c.fillRect(x + 7, p.y + 7, 18, 2); c.fillRect(x + 7, p.y + 11, 12, 2);
       }
+    };
+
+    const drawPickup = (pickup: Pickup) => {
+      const size = W.laneW * 0.5;
+      const pulse = 0.85 + Math.sin(t * 5 + pickup.x) * 0.15;
+      c.save();
+      c.translate(pickup.x, pickup.y);
+      c.scale(pulse, pulse);
+      c.shadowColor = "#25cfff";
+      c.shadowBlur = 24;
+      c.fillStyle = "rgba(25,190,255,0.2)";
+      c.beginPath();
+      c.ellipse(0, 0, size * 0.43, size * 0.58, 0, 0, Math.PI * 2);
+      c.fill();
+      c.shadowBlur = 12;
+      c.fillStyle = "#123d57";
+      c.strokeStyle = "#8af0ff";
+      c.lineWidth = 2.5;
+      c.beginPath();
+      c.roundRect(-size * 0.27, -size * 0.38, size * 0.54, size * 0.86, size * 0.1);
+      c.fill();
+      c.stroke();
+      c.fillStyle = "#9ff5ff";
+      c.beginPath();
+      c.roundRect(-size * 0.12, -size * 0.51, size * 0.24, size * 0.15, size * 0.04);
+      c.fill();
+      c.shadowBlur = 0;
+      c.fillStyle = "#35d9ff";
+      c.beginPath();
+      c.moveTo(size * 0.05, -size * 0.2);
+      c.lineTo(-size * 0.1, size * 0.02);
+      c.lineTo(size * 0.02, size * 0.02);
+      c.lineTo(-size * 0.05, size * 0.22);
+      c.lineTo(size * 0.14, -size * 0.04);
+      c.lineTo(size * 0.02, -size * 0.04);
+      c.closePath();
+      c.fill();
+      c.restore();
+    };
+
+    const drawCoin = (coin: Coin) => {
+      const radius = W.laneW * 0.18;
+      const pulse = 0.94 + Math.sin(t * 6 + coin.x) * 0.06;
+      c.save();
+      c.translate(coin.x, coin.y);
+      c.scale(pulse, pulse);
+      c.shadowColor = "#ffd43b";
+      c.shadowBlur = 18;
+      const gold = c.createRadialGradient(-radius * 0.35, -radius * 0.4, 1, 0, 0, radius * 1.2);
+      gold.addColorStop(0, "#fff6a8");
+      gold.addColorStop(0.45, "#ffd43b");
+      gold.addColorStop(1, "#d88708");
+      c.fillStyle = gold;
+      c.strokeStyle = "#fff2a1";
+      c.lineWidth = Math.max(2, radius * 0.17);
+      c.beginPath();
+      c.arc(0, 0, radius, 0, Math.PI * 2);
+      c.fill();
+      c.stroke();
+      c.shadowBlur = 0;
+      c.strokeStyle = "#b97008";
+      c.lineWidth = Math.max(1, radius * 0.09);
+      c.beginPath();
+      c.arc(0, 0, radius * 0.7, 0, Math.PI * 2);
+      c.stroke();
+      c.fillStyle = "#9b5a06";
+      c.font = `900 ${radius * 1.15}px serif`;
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText("$", 0, radius * 0.03);
+      c.restore();
+    };
+
+    const drawHazard = (hazard: Hazard) => {
+      const { x, y, w, h } = hazard;
+      c.save();
+      c.translate(x, y);
+      c.fillStyle = "rgba(0,0,0,0.55)";
+      c.beginPath();
+      c.ellipse(2, h * 0.38, w * 0.62, h * 0.2, 0, 0, Math.PI * 2);
+      c.fill();
+      if (hazard.kind === "cone") {
+        c.shadowColor = "rgba(255,115,35,0.55)";
+        c.shadowBlur = 8;
+        c.fillStyle = "#f97316";
+        c.beginPath();
+        c.moveTo(0, -h * 0.52);
+        c.lineTo(w * 0.44, h * 0.42);
+        c.lineTo(-w * 0.44, h * 0.42);
+        c.closePath();
+        c.fill();
+        c.shadowBlur = 0;
+        c.strokeStyle = "#fff1d6";
+        c.lineWidth = Math.max(2, w * 0.1);
+        c.beginPath();
+        c.moveTo(-w * 0.27, h * 0.05);
+        c.lineTo(w * 0.27, h * 0.05);
+        c.stroke();
+        c.fillStyle = "#c2410c";
+        c.fillRect(-w * 0.55, h * 0.38, w * 1.1, h * 0.16);
+      } else {
+        c.rotate(Math.sin(t * 1.7 + x) * 0.06);
+        c.fillStyle = "#a9a49a";
+        c.strokeStyle = "#e1d7c3";
+        c.lineWidth = Math.max(1.5, w * 0.06);
+        c.beginPath();
+        c.moveTo(-w * 0.48, -h * 0.28);
+        c.lineTo(w * 0.28, -h * 0.5);
+        c.lineTo(w * 0.5, h * 0.1);
+        c.lineTo(w * 0.2, h * 0.42);
+        c.lineTo(-w * 0.42, h * 0.3);
+        c.closePath();
+        c.fill();
+        c.stroke();
+        c.fillStyle = "#716b61";
+        c.fillRect(-w * 0.18, -h * 0.12, w * 0.32, h * 0.12);
+      }
+      c.restore();
     };
 
     const render = () => {
@@ -450,6 +1547,42 @@ export function SketchRun() {
       c.fillStyle = "#141518"; c.fillRect(-20, -20, w + 40, h + 40);
       c.fillStyle = "#1b1c20";
       for (let y = -80 + (W.scroll % 80); y < h; y += 80) { c.fillRect(0, y, roadX - 14, 40); c.fillRect(roadX + roadW + 14, y, w, 40); }
+      const cityBlend = sceneryZoneBlend(W.distance);
+      c.fillStyle = `rgba(66,78,103,${cityBlend * 0.12})`;
+      c.fillRect(0, 0, roadX - 14, h);
+      c.fillRect(roadX + roadW + 14, 0, w, h);
+      c.fillStyle = `rgba(42,76,42,${(1 - cityBlend) * 0.2})`;
+      c.fillRect(0, 0, roadX - 14, h);
+      c.fillRect(roadX + roadW + 14, 0, w, h);
+      for (const side of [-1, 1] as const) {
+        const startX = side < 0 ? 0 : roadX + roadW + 16;
+        const available = side < 0 ? roadX - 18 : w - startX;
+        if (available < 28) continue;
+        for (let i = 0; i < 4; i++) {
+          const x = startX + (available * (i + 0.5)) / 4;
+          const y = ((i * 173 + W.scroll * 0.42) % (h + 180)) - 90;
+          const bw = Math.min(44, available / 4 + 4);
+          const bh = 54 + ((i * 31) % 56);
+          c.globalAlpha = cityBlend * 0.34;
+          c.fillStyle = "#252a34";
+          c.fillRect(x - bw / 2, y - bh, bw, bh);
+          c.fillStyle = "#d2b97d";
+          for (let windowIndex = 0; windowIndex < 3; windowIndex++) {
+            c.fillRect(x - bw * 0.28 + windowIndex * bw * 0.27, y - bh + 12, 3, 5);
+            c.fillRect(x - bw * 0.28 + windowIndex * bw * 0.27, y - bh + 24, 3, 5);
+          }
+          c.globalAlpha = (1 - cityBlend) * 0.3;
+          c.fillStyle = "#304a34";
+          c.beginPath();
+          c.arc(x, y, 13 + (i % 2) * 4, 0, Math.PI * 2);
+          c.fill();
+          c.fillStyle = "#405a3d";
+          c.beginPath();
+          c.arc(x - 5, y - 5, 7, 0, Math.PI * 2);
+          c.fill();
+          c.globalAlpha = 1;
+        }
+      }
       // road
       const rg = c.createLinearGradient(roadX, 0, roadX + roadW, 0);
       rg.addColorStop(0, "#1e1f22"); rg.addColorStop(0.5, "#292a2e"); rg.addColorStop(1, "#1e1f22");
@@ -477,6 +1610,7 @@ export function SketchRun() {
         }
       }
       for (const p of W.props) drawProp(p);
+      for (const hazard of W.hazards) drawHazard(hazard);
       // police light wash
       if (W.heat > 0.02) {
         const on = Math.sin(t * 18) > 0;
@@ -490,17 +1624,95 @@ export function SketchRun() {
         const model = car.model ?? "sedan";
         const spr = vehicleSprite(model, car.color, car.w, car.h);
         const sw = spr.width / 2, sh = spr.height / 2;
-        c.drawImage(spr, car.x - sw / 2, car.y - sh / 2, sw, sh);
+        if (isBike(model)) {
+          drawBikeSprite(c, spr, car.w, car.h, car.x - car.w / 2, car.y - car.h / 2, car.w, car.h);
+        } else {
+          c.drawImage(spr, car.x - sw / 2, car.y - sh / 2, sw, sh);
+        }
         if (car.kind === "police") { c.save(); c.translate(car.x, car.y); drawLightbar(c, car.w, car.h, t, car.seed); c.restore(); }
+      }
+      for (const pickup of W.pickups) drawPickup(pickup);
+      for (const coin of W.coins) drawCoin(coin);
+      for (const racer of W.remoteRacers) {
+        const racerX = roadX + racer.laneRatio * roadW;
+        const racerY = Math.max(
+          -W.ph,
+          Math.min(W.h + W.ph, W.py - (racer.distance - W.distance) * 0.12),
+        );
+        if (racerY < -W.ph || racerY > W.h + W.ph) continue;
+        const sprite = vehicleSprite("super", "#47b9ff", W.pw, W.ph);
+        c.save();
+        c.globalAlpha = 0.9;
+        c.drawImage(
+          sprite,
+          racerX - sprite.width / 4,
+          racerY - sprite.height / 4,
+          sprite.width / 2,
+          sprite.height / 2,
+        );
+        c.fillStyle = "#e9f7ff";
+        c.font = "bold 10px 'Space Mono', monospace";
+        c.textAlign = "center";
+        c.fillText(racer.username, racerX, racerY - W.ph * 0.7, W.laneW * 1.5);
+        c.restore();
       }
       // player
       const blink = W.invuln > 0 && Math.floor(t * 12) % 2 === 0;
       if (!blink) {
         c.save(); c.translate(W.px, W.py); c.rotate(W.heading);
-        c.fillStyle = "rgba(0,0,0,0.5)"; c.beginPath(); c.roundRect(-W.pw / 2 + 5, -W.ph / 2 + 8, W.pw, W.ph, W.pw * 0.3); c.fill();
+        const selectedVehicleIsBike = VEHICLE_DEFS.some(
+  (vehicle) =>
+    vehicle.id === selectedVehicleRef.current &&
+    vehicle.cat === "bike"
+);
+
+if (!selectedVehicleIsBike) {
+  c.fillStyle = "rgba(0,0,0,0.5)";
+  c.beginPath();
+  c.roundRect(
+    -W.pw / 2 + 5,
+    -W.ph / 2 + 8,
+    W.pw,
+    W.ph,
+    W.pw * 0.3
+  );
+  c.fill();
+}
         if (W.boosting) { c.shadowColor = "#4cc3ff"; c.shadowBlur = 30; }
-        const spr = playerSprite.current;
-        if (spr) c.drawImage(spr, -W.pw / 2 - W.pw * 0.04, -W.ph / 2, W.pw * 1.08, W.ph);
+
+const selectedDef = VEHICLE_DEFS.find(
+  (vehicle) => vehicle.id === selectedVehicleRef.current
+);
+const spr =
+  selectedDef && selectedDef.model !== "musti"
+    ? vehicleSprite(
+        selectedDef.model,
+        settingsRef.current.paint,
+        W.pw,
+        W.ph
+      )
+    : playerSprite.current;
+
+
+if (spr) {
+  if (selectedDef?.cat === "bike") {
+    const size = playerBikeRenderSize(W.pw, W.ph);
+    drawBikeSprite(
+      c,
+      spr as HTMLCanvasElement,
+      W.pw,
+      W.ph,
+      -size.width / 2,
+      -size.height / 2,
+      size.width,
+      size.height,
+    );
+  } else {
+    const carWidth = W.pw * 1.08;
+    c.drawImage(spr, -carWidth / 2, -W.ph / 2, carWidth, W.ph);
+  }
+}
+
         else { c.fillStyle = "#eee"; c.fillRect(-W.pw / 2, -W.ph / 2, W.pw, W.ph); }
         c.restore();
       }
@@ -533,7 +1745,7 @@ export function SketchRun() {
       render();
       sfx.current.engine(W.speed, ph === "playing", W.heat, t);
       hudT += dt;
-      if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction }); }
+      if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction, wantedLevel: W.pursuit.wantedLevel, policeWarning: W.policeWarning }); }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -550,6 +1762,15 @@ export function SketchRun() {
 
   const playing = phase === "playing";
   const tilt = settings.control === "tilt";
+  const unlockedAchievementIds = new Set(progression.unlockedAchievements);
+  const achievementValue = (id: AchievementId) => {
+    if (id === "first-race") return `${Math.min(1, progression.completedRaces)} / 1`;
+    if (id === "rookie-racer") return `${Math.min(1000, progression.bestScore).toLocaleString()} / 1,000 best`;
+    if (id === "high-scorer") return `${Math.min(5000, progression.bestScore).toLocaleString()} / 5,000 best`;
+    if (id === "coin-collector") return `${Math.min(25, progression.lifetimeCoins)} / 25 coins`;
+    if (id === "near-miss-expert") return `${Math.min(10, progression.lifetimeNearMisses)} / 10 near misses`;
+    return "One race · 60 seconds";
+  };
 
   const controlsPanel = (
     <div className="panel-stack">
@@ -584,13 +1805,16 @@ export function SketchRun() {
               <div className="hud-label">Score</div>
               <div className="hud-value">{hud.score.toLocaleString()}</div>
               <div className="hud-label">Best {Math.max(best, hud.score).toLocaleString()}</div>
+              <div className="hud-label" style={{ color: "#ffe36e", opacity: 1 }}>
+                COINS {garageBalance?.toLocaleString() ?? "0"} Jaa'izah
+              </div>
             </div>
             <div className="hud-panel hud-center">
               <div className="hud-value">{hud.speed}<span className="hud-label ml-1">km/h</span></div>
               <div className="mt-1 flex justify-center gap-1" aria-label={`${hud.lives} lives left`}>
                 {Array.from({ length: MAX_LIVES }).map((_, i) => <span key={i} className={i < hud.lives ? "life-pip" : "life-pip life-pip-empty"} />)}
               </div>
-              <div className="meter mt-1.5"><div className="meter-fill-boost" style={{ width: `${hud.boost * 100}%` }} /></div>
+              <div className="meter mt-1.5"><div className="meter-fill-boost" style={{ width: `${(hud.boost / world.current.boostCapacity) * 100}%` }} /></div>
               <div className="meter mt-1"><div className="meter-fill-grip" style={{ width: `${hud.traction * 100}%` }} /></div>
               <div className="hud-label">{hud.drift > 0.3 ? "Drifting!" : "Nitro · Grip"}</div>
             </div>
@@ -599,7 +1823,37 @@ export function SketchRun() {
                 <button className="icon-btn" onClick={toggleSound} aria-label={sound ? "Mute sound" : "Unmute sound"}>{sound ? "🔊" : "🔇"}</button>
                 <button className="icon-btn" onClick={togglePause} aria-label={phase === "paused" ? "Resume" : "Pause"}>{phase === "paused" ? "▶" : "❚❚"}</button>
               </div>
-              {hud.heat > 0.15 && <div className="heat-badge">● PURSUIT</div>}
+              <div
+                className={`heat-badge wanted-badge wanted-${hud.wantedLevel} ${hud.policeWarning > 0 ? "police-warning" : ""}`}
+                role="status"
+                aria-live="polite"
+              >
+                {hud.wantedLevel === 0
+                  ? "WANTED 0"
+                  : hud.wantedLevel === 1
+                    ? "POLICE ALERT · LEVEL 1"
+                    : hud.wantedLevel === 2
+                      ? "PURSUIT · LEVEL 2"
+                      : "HIGH PRESSURE · LEVEL 3"}
+              </div>
+              {walletError && (
+                <div
+                  role="alert"
+                  className="hud-label"
+                  style={{ color: "#ff8e8e", opacity: 1, maxWidth: 180, textAlign: "right" }}
+                >
+                  {walletError}
+                </div>
+              )}
+              {multiplayerSyncMessage && (
+                <div
+                  role="status"
+                  className="hud-label"
+                  style={{ color: "#ffcf72", opacity: 1, maxWidth: 180, textAlign: "right" }}
+                >
+                  {multiplayerSyncMessage}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -622,9 +1876,12 @@ export function SketchRun() {
           <div className="menu">
             {screenName === "home" && (
               <div className="menu-home">
-                <div className="hero-wrap"><img src={heroImgSrc} alt="White supercar under police lights" width={1280} height={720} className="hero-img" /></div>
+                <div className="hero-wrap"><img src={heroImgSrc} alt="White supercar under blue and red police lights" width={1280} height={720} className="hero-img" /></div>
                 <div className="menu-col">
                   <p className="kicker">Arcade pursuit racer</p>
+                  {multiplayerSyncMessage && (
+                    <p className="note note-warn" role="alert">{multiplayerSyncMessage}</p>
+                  )}
                   <h1 className="title">MUSTI<br />CAR RACING</h1>
                   <button className="cta" onClick={start}>RACE NOW</button>
                   <nav className="menu-grid" aria-label="Main menu">
@@ -632,6 +1889,7 @@ export function SketchRun() {
                     <button className="btn-secondary" onClick={() => setScreen("howto")}>How to play</button>
                     <button className="btn-secondary" onClick={() => setScreen("multi")}>Multiplayer</button>
                     <button className="btn-secondary" onClick={() => setScreen("controls")}>Controls</button>
+                    <button className="btn-secondary" onClick={() => setScreen("achievements")}>Achievements</button>
                     <button className="btn-secondary" onClick={() => setScreen("account")}>
   Guest Profile & Jaa'izah
 </button>
@@ -643,31 +1901,324 @@ export function SketchRun() {
                 </div>
               </div>
             )}
-            {screenName === "garage" && (
-              <div className="menu-card">
-                <h2 className="screen-title">Garage</h2>
-                <div className="garage-car" style={{ ["--paint" as string]: settings.paint }}>
-                  <img src={playerImgSrc} alt="" width={576} height={1152} />
-                </div>
-                <div className="swatches" role="radiogroup" aria-label="Paint colour">
-                  {PLAYER_PAINTS.map((p) => (
-                    <button key={p.id} role="radio" aria-checked={settings.paint === p.id} aria-label={p.name} title={p.name} className={`swatch ${settings.paint === p.id ? "swatch-on" : ""}`} style={{ background: p.id }} onClick={() => saveSettings({ paint: p.id })} />
-                  ))}
-                </div>
-                <p className="hud-label">{PLAYER_PAINTS.find((p) => p.id === settings.paint)?.name ?? "Custom"}</p>
-                <label className="field">Driver name
-                  <input maxLength={16} value={settings.name} onChange={(e) => saveSettings({ name: e.target.value })} />
-                </label>
-                <button className="cta" onClick={() => setScreen("home")}>DONE</button>
+
+{screenName === "garage" && (
+  <div className="menu-card">
+    <h2 className="screen-title">VEHICLE GARAGE</h2>
+
+    <p className="note">
+      Unlock your next ride with Jaa'izah. Your first car is free!
+    </p>
+
+    <div className="garage-wallet">
+      <span>YOUR BALANCE</span>
+      <strong>
+        {garageBalance === null
+          ? "Guest profile required"
+          : `${garageBalance.toLocaleString()} Jaa'izah`}
+      </strong>
+    </div>
+
+
+<div className="garage-showroom">
+  <button
+    className="garage-arrow"
+    aria-label="Previous vehicle"
+    onClick={() =>
+      setGarageIndex((i) => (i - 1 + VEHICLE_DEFS.length) % VEHICLE_DEFS.length)
+    }
+  >
+    &#10094;
+  </button>
+
+  {(() => {
+    const vehicle = VEHICLE_DEFS[garageIndex];
+    if (!vehicle) return null;
+    const vehicleModel = vehicle.model;
+    const owned = ownedVehicles.includes(vehicle.id);
+    const selected = selectedVehicle === vehicle.id;
+    const price = VEHICLE_PRICES[vehicle.id] ?? 0;
+
+    return (
+      <div className="garage-feature">
+        <div className="garage-stage">
+          {vehicleModel === "musti" ? (
+            <img
+              className="garage-feature-image"
+              src={playerImgSrc}
+              alt={vehicle.name}
+              style={{ filter: `drop-shadow(0 0 24px ${settings.paint})` }}
+            />
+          ) : (
+            <canvas
+              className="garage-feature-canvas"
+              ref={(node) => {
+                if (!node) return;
+                const ctx = node.getContext("2d");
+                if (!ctx) return;
+                ctx.clearRect(0, 0, node.width, node.height);
+                const sprite = vehicleSprite(
+                  vehicleModel,
+                  settings.paint,
+                  105,
+                  180,
+                );
+                if (vehicle.cat === "bike") {
+                  const previewWidth = 126;
+                  const previewHeight = 216;
+                  const position = centeredBikePreviewPosition(
+                    node.width,
+                    node.height,
+                    previewWidth,
+                    previewHeight,
+                  );
+                  drawBikeSprite(
+                    ctx,
+                    sprite,
+                    105,
+                    180,
+                    position.x,
+                    position.y,
+                    previewWidth,
+                    previewHeight,
+                  );
+                } else {
+                  const previewWidth = sprite.width / 2;
+                  const previewHeight = sprite.height / 2;
+                  ctx.drawImage(
+                    sprite,
+                    (node.width - previewWidth) / 2,
+                    (node.height - previewHeight) / 2,
+                    previewWidth,
+                    previewHeight,
+                  );
+                }
+              }}
+              width={300}
+              height={260}
+              aria-label={`${vehicle.name} vehicle preview`}
+            />
+          )}
+
+          <span className="garage-stage-number">
+            {String(garageIndex + 1).padStart(2, "0")} / {VEHICLE_DEFS.length}
+          </span>
+        </div>
+
+        <p className="garage-vehicle-type">
+          {vehicle.cat === "bike" ? "MOTORCYCLE" : "PERFORMANCE CAR"}
+        </p>
+
+        <h2 className="garage-feature-name">{vehicle.name}</h2>
+        <p className="garage-feature-description">{vehicle.blurb}</p>
+
+        <div className="garage-performance">
+          {[
+            ["TOP SPEED", vehicle.stats.speed],
+            ["ACCELERATION", vehicle.stats.accel],
+            ["GRIP", vehicle.stats.grip],
+            ["BRAKING", vehicle.stats.brake],
+          ].map(([label, value]) => (
+            <div className="garage-stat" key={label}>
+              <div className="garage-stat-heading">
+                <span>{label}</span>
+                <strong>{value}</strong>
               </div>
+              <div className="garage-stat-track">
+                <div
+                  className="garage-stat-fill"
+                  style={{ width: `${value}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="garage-feature-footer">
+          <div className="garage-feature-price">
+            <span>{owned ? "OWNED VEHICLE" : "UNLOCK PRICE"}</span>
+            <strong>
+              {owned ? "UNLOCKED" : `${price.toLocaleString()} Jaa'izah`}
+            </strong>
+          </div>
+
+          <button
+            className="cta garage-action"
+            onClick={() => purchaseOrSelectVehicle(vehicle.id)}
+          >
+            {selected
+              ? "CURRENT RIDE"
+              : owned
+                ? "SELECT VEHICLE"
+                : "BUY VEHICLE"}
+          </button>
+          {owned && (
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                chooseUpgradeVehicle(vehicle.id);
+                setScreen("upgrades");
+              }}
+            >
+              TUNE THIS VEHICLE
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  })()}
+
+  <button
+    className="garage-arrow"
+    aria-label="Next vehicle"
+    onClick={() =>
+      setGarageIndex((i) => (i + 1) % VEHICLE_DEFS.length)
+    }
+  >
+    &#10095;
+  </button>
+</div>
+
+
+    {garageMessage && (
+      <p className="garage-message" role="status">
+        {garageMessage}
+      </p>
+    )}
+
+    <div className="garage-customisation">
+      <h3>Paint Customisation</h3>
+
+      <div className="swatches" role="radiogroup" aria-label="Paint colour">
+        {PLAYER_PAINTS.map((p) => (
+          <button
+            key={p.id}
+            role="radio"
+            aria-checked={settings.paint === p.id}
+            aria-label={p.name}
+            title={p.name}
+            className={`swatch ${settings.paint === p.id ? "swatch-on" : ""}`}
+            style={{ background: p.id }}
+            onClick={() => saveSettings({ paint: p.id })}
+          />
+        ))}
+      </div>
+
+      <p className="hud-label">
+        {PLAYER_PAINTS.find((p) => p.id === settings.paint)?.name ?? "Custom"}
+      </p>
+
+      <label className="field">
+        Driver name
+        <input
+          maxLength={16}
+          value={settings.name}
+          onChange={(e) => saveSettings({ name: e.target.value })}
+        />
+      </label>
+    </div>
+
+    <button className="cta" onClick={() => setScreen("home")}>
+      BACK TO HOME
+    </button>
+  </div>
+)}
+
+{screenName === "upgrades" && (
+  <div className="menu-card upgrades-screen">
+    <p className="kicker">Workshop</p>
+    <h2 className="screen-title">VEHICLE UPGRADES</h2>
+    <p className="note">
+      Every ride starts stock at level 0. Tune owned vehicles independently; changes take effect the next time you race in that vehicle.
+    </p>
+    <div className="garage-wallet">
+      <span>YOUR BALANCE</span>
+      <strong>
+        {garageBalance === null
+          ? "Guest profile required"
+          : `${garageBalance.toLocaleString()} Jaa'izah`}
+      </strong>
+    </div>
+    <label className="field">
+      Owned vehicle
+      <select
+        className="upgrade-vehicle-select"
+        value={upgradeVehicleId}
+        onChange={(event) => chooseUpgradeVehicle(event.target.value)}
+      >
+        {ownedVehicles.map((vehicleId) => {
+          const vehicle = VEHICLE_DEFS.find((item) => item.id === vehicleId);
+          return vehicle ? (
+            <option key={vehicleId} value={vehicleId}>
+              {vehicle.name}{selectedVehicle === vehicleId ? " · Current ride" : ""}
+            </option>
+          ) : null;
+        })}
+      </select>
+    </label>
+    {upgradeMessage && (
+      <p className="garage-message" role="status">{upgradeMessage}</p>
+    )}
+    <div className="upgrade-list">
+      {UPGRADE_CATEGORIES.map((category) => {
+        const definition = UPGRADE_DEFINITIONS[category];
+        const level = upgradeLevels[category];
+        const cost = nextUpgradeCost(category, level);
+        const affordable = cost !== null && garageBalance !== null && garageBalance >= cost;
+        return (
+          <article className="upgrade-card" key={category}>
+            <div className="upgrade-card-heading">
+              <div>
+                <h3>{definition.title}</h3>
+                <p>Level {level} / {MAX_UPGRADE_LEVEL}</p>
+              </div>
+              <div className="upgrade-level-pips" aria-label={`Upgrade level ${level} of ${MAX_UPGRADE_LEVEL}`}>
+                {Array.from({ length: MAX_UPGRADE_LEVEL }, (_, index) => (
+                  <span key={index} className={index < level ? "upgrade-pip upgrade-pip-on" : "upgrade-pip"} />
+                ))}
+              </div>
+            </div>
+            {cost === null ? (
+              <>
+                <p className="upgrade-benefit">Maximum level reached</p>
+                <button className="upgrade-buy" disabled>MAX LEVEL</button>
+              </>
+            ) : (
+              <>
+                <p className="upgrade-benefit">
+                  Next: Level {level + 1} · {upgradeBenefit(category, level + 1)}
+                </p>
+                <button
+                  className={`upgrade-buy ${affordable ? "upgrade-buy-affordable" : "upgrade-buy-unaffordable"}`}
+                  disabled={!affordable}
+                  onClick={() => buyUpgrade(category)}
+                >
+                  {garageBalance === null
+                    ? `${cost.toLocaleString()} Jaa'izah`
+                    : affordable
+                      ? `BUY · ${cost.toLocaleString()} Jaa'izah`
+                      : `NEED ${(cost - garageBalance).toLocaleString()} MORE`}
+                </button>
+              </>
             )}
+          </article>
+        );
+      })}
+    </div>
+    <div className="upgrade-actions">
+      <button className="btn-secondary" onClick={() => setScreen("garage")}>BACK TO GARAGE</button>
+      <button className="cta" onClick={() => setScreen("home")}>BACK TO HOME</button>
+    </div>
+  </div>
+)}
+
             {screenName === "howto" && (
               <div className="menu-card">
                 <h2 className="screen-title">How to play</h2>
                 <ul className="howto">
                   <li><b>Steer</b> <kbd>←</kbd><kbd>→</kbd> or <kbd>A</kbd><kbd>D</kbd> · touch arrows · or tilt your phone</li>
                   <li><b>Gas / Brake</b> <kbd>↑</kbd><kbd>↓</kbd> or <kbd>W</kbd><kbd>S</kbd> · BRAKE button</li>
-                  <li><b>Nitro</b> <kbd>Space</kbd> / <kbd>Shift</kbd> · NITRO button. Near misses refill it.</li>
+                  <li><b>Nitro</b> <kbd>Space</kbd> / <kbd>Shift</kbd> · NITRO button. Collect glowing road canisters and make near misses to refill it.</li>
                   <li><b>Drift</b> Steer hard at high speed to slide. Drifting scores points but drains grip — let it recover.</li>
                   <li><b>Police</b> Cops chase from behind and cut in from side lanes. Make them crash into traffic for +150.</li>
                   <li><b>Pause</b> <kbd>P</kbd>/<kbd>Esc</kbd> · <b>Mute</b> <kbd>M</kbd></li>
@@ -685,20 +2236,17 @@ export function SketchRun() {
             {screenName === "multi" && (
               <div className="menu-card">
                 <h2 className="screen-title">Multiplayer</h2>
-                <p className="note">Private room races with friends are coming next. Online racing needs a live game server to sync cars and check results fairly, and that isn’t connected yet — so there’s no fake “online” mode here.</p>
-                <div className="row opacity-50" aria-disabled="true">
-                  <button className="btn-secondary" disabled>Create room</button>
-                  <input className="code-input" placeholder="ROOM CODE" disabled />
-                  <button className="btn-secondary" disabled>Join</button>
-                </div>
+                <MultiplayerLobby
+                  onRaceStart={startMultiplayerRace}
+                  onBack={() => setScreen("home")}
+                />
                 <h3 className="hud-label mt-4">Local leaderboard · this device</h3>
                 <ol className="board">
                   {board.length === 0 && <li className="note">No races yet.</li>}
                   {board.slice(0, 5).map((e, i) => <li key={e.date}><span>{i + 1}. {e.name}</span><span>{e.score.toLocaleString()} · {e.time.toFixed(0)}s</span></li>)}
                 </ol>
                 <p className="note">Points and trophies only — no cash prizes.</p>
-                
-                <button className="cta" onClick={() => setScreen("home")}>BACK</button>
+
               </div>
             )}
 
@@ -708,6 +2256,43 @@ export function SketchRun() {
                 <button className="cta mt-4" onClick={() => setScreen("home")}>
                   BACK TO HOME
                 </button>
+              </div>
+            )}
+
+            {screenName === "achievements" && (
+              <div className="menu-card achievements-screen">
+                <p className="kicker">Driver progression</p>
+                <h2 className="screen-title">Achievements</h2>
+                <div className="progression-summary">
+                  <span>{progression.completedRaces} races</span>
+                  <span>{progression.lifetimeCoins} road coins</span>
+                  <span>{progression.lifetimeNearMisses} near misses</span>
+                  <span>{(progression.totalDistance / 1000).toFixed(2)} km</span>
+                </div>
+                {progressionError && <p className="note note-warn" role="alert">{progressionError}</p>}
+                <div className="achievement-list">
+                  {ACHIEVEMENTS.map((achievement) => {
+                    const unlocked = unlockedAchievementIds.has(achievement.id);
+                    const rewardClaimed = progression.claimedAchievementRewards.includes(achievement.id);
+                    return (
+                      <article
+                        key={achievement.id}
+                        className={`achievement-card ${unlocked ? "achievement-unlocked" : ""}`}
+                      >
+                        <div className="achievement-heading">
+                          <strong>{achievement.title}</strong>
+                          <span>{unlocked ? "UNLOCKED" : "LOCKED"}</span>
+                        </div>
+                        <p>{achievement.description}</p>
+                        <div className="achievement-footer">
+                          <span>{achievementValue(achievement.id)}</span>
+                          <span>{rewardClaimed ? `+${achievement.reward} CLAIMED` : `REWARD ${achievement.reward}`}</span>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+                <button className="cta" onClick={() => setScreen("home")}>BACK TO HOME</button>
               </div>
             )}
           </div>
@@ -728,18 +2313,43 @@ export function SketchRun() {
           </div>
         )}
 
-        {phase === "over" && (
+        {phase === "over" && final && (
           <div className="menu">
-            <div className="menu-card">
+            <div className="menu-card results-card">
               <p className="kicker">Busted</p>
               <h2 className="screen-title">Race results</h2>
               <div className="final-score">{final.score.toLocaleString()}</div>
               {final.newBest ? <p className="new-best">★ New best score ★</p> : <p className="hud-label">Best {best.toLocaleString()}</p>}
-              <p className="note">{settings.name} · #{final.rank} on this device · {final.time.toFixed(1)}s · {(final.distance / 1000).toFixed(2)} km</p>
+              <p className="note">{settings.name} · #{final.rank} on this device</p>
+              <div className="result-stats">
+                <div><span>Distance</span><strong>{(final.distance / 1000).toFixed(2)} km</strong></div>
+                <div><span>Time</span><strong>{final.time.toFixed(1)} s</strong></div>
+                <div><span>Road coins</span><strong>{final.coinsCollected}</strong></div>
+                <div><span>Near misses</span><strong>{final.nearMisses}</strong></div>
+              </div>
+              {final.unlockedNow.length > 0 && (
+                <section className="results-unlocks" role="status" aria-live="polite">
+                  <strong>ACHIEVEMENT UNLOCKED</strong>
+                  {final.unlockedNow.map((id) => {
+                    const achievement = ACHIEVEMENTS.find((item) => item.id === id);
+                    return achievement ? (
+                      <span key={id}>{achievement.title} · +{achievement.reward} Jaa'izah</span>
+                    ) : null;
+                  })}
+                </section>
+              )}
+              {final.saveError && <p className="note note-warn" role="alert">{final.saveError}</p>}
               <ol className="board">
                 {board.slice(0, 5).map((e, i) => <li key={e.date} className={i + 1 === final.rank ? "board-me" : ""}><span>{i + 1}. {e.name}</span><span>{e.score.toLocaleString()}</span></li>)}
               </ol>
-              <button className="cta" onClick={start}>RACE AGAIN</button>
+              {multiplayerRace ? (
+                <button className="cta" onClick={toMenu}>LEAVE ONLINE ROOM</button>
+              ) : (
+                <>
+                  <button className="cta" onClick={start}>RACE AGAIN</button>
+                  <button className="btn-secondary" onClick={() => { setScreen("garage"); setPhase("menu"); }}>GARAGE</button>
+                </>
+              )}
               <button className="ghost-btn mt-3" onClick={toMenu}>Main menu</button>
             </div>
           </div>

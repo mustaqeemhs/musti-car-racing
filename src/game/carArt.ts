@@ -7,8 +7,48 @@ export const MODEL_RATIO: Record<VehicleModel, number> = {
 };
 export const MODEL_WIDTH: Record<VehicleModel, number> = {
   sedan: 0.98, coupe: 0.95, suv: 1.06, muscle: 1.04, super: 0.98, taxi: 0.98, van: 1.06, police: 1.0,
-  sportbike: 0.56, naked: 0.56, dirtbike: 0.54, tourer: 0.62,
+  sportbike: 0.68, naked: 0.68, dirtbike: 0.66, tourer: 0.72,
 };
+
+export function playerBikeRenderSize(width: number, height: number) {
+  return { width: width * 0.86, height: height * 0.9 };
+}
+
+export function drawBikeSprite(
+  c: CanvasRenderingContext2D,
+  sprite: HTMLCanvasElement,
+  sourceWidth: number,
+  sourceHeight: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const pad = Math.ceil(sourceWidth * 0.3);
+  c.drawImage(
+    sprite,
+    pad * 2,
+    pad * 2,
+    sourceWidth * 2,
+    sourceHeight * 2,
+    x,
+    y,
+    width,
+    height,
+  );
+}
+
+export function centeredBikePreviewPosition(
+  canvasWidth: number,
+  canvasHeight: number,
+  previewWidth: number,
+  previewHeight: number,
+) {
+  return {
+    x: (canvasWidth - previewWidth) / 2,
+    y: (canvasHeight - previewHeight) / 2,
+  };
+}
 export const PAINTS = [
   "#2f6fd6", "#c8312b", "#b9bec6", "#17181b", "#e3b928", "#2f8a4f", "#eeeeea", "#7a2f2a",
   "#3b4f6b", "#d96f1e", "#7b4fd0", "#25b7c4", "#8a1538", "#5b6770",
@@ -256,20 +296,66 @@ export function drawLightbar(c: CanvasRenderingContext2D, w: number, h: number, 
   c.shadowBlur = 0;
 }
 
+
 const cache = new Map<string, HTMLCanvasElement>();
-export function clearSpriteCache() { cache.clear(); }
-export function vehicleSprite(model: VehicleModel, color: string, w: number, h: number) {
+
+const bikeImages: Partial<Record<BikeModel, HTMLImageElement>> = {};
+
+const bikeImagePaths: Partial<Record<BikeModel, string>> = {
+  sportbike: "/bikes/Red%20sport%20bike.png",
+  naked: "/bikes/black%20street%20bike.png",
+  dirtbike: "/bikes/Green%20dirt%20bike.png",
+};
+
+for (const [model, path] of Object.entries(bikeImagePaths)) {
+  if (!path) continue;
+
+  if (typeof window === "undefined") continue;
+
+const img = new window.Image();
+  img.onload = () => clearSpriteCache();
+  img.src = path;
+  bikeImages[model as BikeModel] = img;
+}
+
+export function clearSpriteCache() {
+  cache.clear();
+}
+
+export function vehicleSprite(
+  model: VehicleModel,
+  color: string,
+  w: number,
+  h: number,
+) {
   const key = `${model}|${color}|${Math.round(w)}|${Math.round(h)}`;
+
   let cv = cache.get(key);
+
   if (!cv) {
-    const S = 2, pad = Math.ceil(w * 0.3);
+    const S = 2;
+    const pad = Math.ceil(w * 0.3);
+
     cv = document.createElement("canvas");
-    cv.width = Math.ceil((w + pad * 2) * S); cv.height = Math.ceil((h + pad * 2) * S);
+    cv.width = Math.ceil((w + pad * 2) * S);
+    cv.height = Math.ceil((h + pad * 2) * S);
+
     const c = cv.getContext("2d")!;
-    c.scale(S, S); c.translate(w / 2 + pad, h / 2 + pad);
-    if (isBike(model)) drawMotorcycle(c, model, color, w, h);
-    else drawVehicle(c, model, color, w, h);
+    c.scale(S, S);
+    c.translate(w / 2 + pad, h / 2 + pad);
+
+    const bikeImage = isBike(model) ? bikeImages[model] : undefined;
+
+    if (bikeImage?.complete && bikeImage.naturalWidth > 0) {
+      c.drawImage(bikeImage, -w / 2, -h / 2, w, h);
+    } else if (isBike(model)) {
+      drawMotorcycle(c, model, color, w, h);
+    } else {
+      drawVehicle(c, model, color, w, h);
+    }
+
     cache.set(key, cv);
   }
+
   return cv;
 }
