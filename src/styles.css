@@ -502,3 +502,51 @@ button:active {
   .menu > .menu-card { margin-block: 0; }
   .garage-stage { overflow: visible; }
 }
+
+/* ===== Multiplayer room page ===== */
+.mp-room { display: grid; gap: .85rem; text-align: left; }
+.mp-room-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; padding: .85rem 1rem; border: 1px solid color-mix(in oklab, var(--paper) 18%, transparent); border-radius: 8px; background: color-mix(in oklab, var(--paper) 5%, transparent); }
+.mp-room-code { display: grid; gap: .15rem; margin-right: auto; min-width: 0; }
+.mp-eyebrow { font-size: .6rem; letter-spacing: .2em; opacity: .65; }
+.mp-room-code strong { font-family: "Bebas Neue", sans-serif; font-size: 1.7rem; font-weight: 400; letter-spacing: .12em; line-height: 1; overflow-wrap: anywhere; }
+.mp-copy { font-size: .62rem; letter-spacing: .15em; padding: .4rem .75rem; border: 1px solid color-mix(in oklab, var(--paper) 40%, transparent); border-radius: 999px; color: var(--paper); background: transparent; }
+.mp-pill { font-size: .6rem; letter-spacing: .15em; padding: .32rem .7rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.mp-pill-wait { color: #ffd166; }
+.mp-pill-live { color: #7dffa8; }
+.mp-count { margin: 0; font-size: .68rem; letter-spacing: .18em; opacity: .7; }
+.mp-members { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
+.mp-member { display: flex; align-items: center; gap: .7rem; padding: .6rem .75rem; border: 1px solid color-mix(in oklab, var(--paper) 16%, transparent); border-radius: 8px; background: color-mix(in oklab, var(--paper) 4%, transparent); }
+.mp-member-me { border-color: color-mix(in oklab, var(--siren-blue) 75%, transparent); }
+.mp-avatar { flex: none; width: 2rem; height: 2rem; border-radius: 50%; display: grid; place-items: center; font-family: "Bebas Neue", sans-serif; font-size: 1.1rem; background: var(--siren-blue); color: var(--paper); }
+.mp-member-name { flex: 1; min-width: 0; font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-tag { margin-left: .45rem; padding: .1rem .35rem; border: 1px solid color-mix(in oklab, var(--paper) 40%, transparent); border-radius: 3px; font-size: .52rem; letter-spacing: .14em; opacity: .85; vertical-align: middle; }
+.mp-ready { flex: none; font-size: .6rem; letter-spacing: .14em; opacity: .6; }
+.mp-ready-on { color: #7dffa8; opacity: 1; }
+.mp-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .6rem; }
+.mp-btn { font-family: "Bebas Neue", sans-serif; font-size: 1.05rem; letter-spacing: .14em; padding: .6rem .8rem; border-radius: 6px; border: 1.5px solid color-mix(in oklab, var(--paper) 45%, transparent); color: var(--paper); background: transparent; }
+.mp-btn:disabled { opacity: .4; cursor: not-allowed; }
+.mp-btn-primary { background: var(--paper); color: var(--ink); border-color: var(--paper); box-shadow: 2px 2px 0 var(--siren-red), -2px -2px 0 var(--siren-blue); }
+.mp-btn-primary:disabled { background: transparent; color: color-mix(in oklab, var(--paper) 60%, transparent); border-color: color-mix(in oklab, var(--paper) 30%, transparent); box-shadow: none; opacity: .6; }
+.mp-hint { margin: 0; font-size: .68rem; opacity: .7; text-align: center; }
+.mp-countdown { margin: 0; text-align: center; font-family: "Bebas Neue", sans-serif; font-size: 2rem; letter-spacing: .12em; }
+.mp-leave { justify-self: center; font-size: .68rem; letter-spacing: .18em; text-decoration: underline; background: none; color: var(--paper); opacity: .75; }
+.mp-leave:disabled { opacity: .35; }
+
+/* ===== Online race: progress bar and results ===== */
+.race-progress { position: relative; height: 1.1rem; margin-top: .35rem; border: 1px solid color-mix(in oklab, var(--paper) 40%, transparent); border-radius: 3px; overflow: hidden; background: color-mix(in oklab, var(--ink) 70%, transparent); }
+.race-progress-fill { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, var(--siren-blue), var(--nitro)); transition: width .2s linear; }
+.race-progress-label { position: relative; display: block; text-align: center; font-size: .55rem; letter-spacing: .15em; line-height: 1.1rem; }
+.race-standings { display: grid; gap: .5rem; text-align: left; }
+
+/* ===== Phone hardening (landscape and small screens) ===== */
+html, body { max-width: 100%; overflow-x: hidden; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.game-shell { width: 100%; height: 100%; height: 100dvh; }
+.menu-home, .menu-col, .menu-card, .multiplayer-panel { min-width: 0; max-width: 100%; }
+@media (orientation: landscape) and (max-height: 520px) {
+  .menu { align-items: flex-start; padding-top: max(.6rem, env(safe-area-inset-top)); padding-bottom: max(.6rem, env(safe-area-inset-bottom)); }
+  .menu-card { padding: .8rem 1rem; gap: .5rem; max-width: 34rem; }
+  .mp-room { gap: .6rem; }
+  .mp-member { padding: .4rem .6rem; }
+  .mp-room-code strong { font-size: 1.4rem; }
+  .mp-countdown { font-size: 1.5rem; }
+}

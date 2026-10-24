@@ -557,6 +557,19 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
     await refreshRoom(room.id);
   }
 
+  const [codeCopied, setCodeCopied] = useState(false);
+
+  async function copyRoomCode() {
+    if (!room) return;
+    try {
+      await navigator.clipboard.writeText(room.room_code);
+      setCodeCopied(true);
+      window.setTimeout(() => setCodeCopied(false), 1800);
+    } catch {
+      setError("Could not copy the room code. Select it and copy it manually.");
+    }
+  }
+
   async function leaveRoom() {
     if (!client || !room) return;
     setBusy(true);
@@ -846,42 +859,47 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
         </>
       ) : (
         <>
-          {room && (
-            <>
-              <div className="multiplayer-room-heading">
-                <div>
-                  <span className="hud-label">ROOM CODE</span>
-                  <strong>{room.room_code}</strong>
-                </div>
-                <div>
-                  <span className="hud-label">STATUS</span>
-                  <strong>{room.status === "waiting" ? "WAITING" : "RACE STARTING"}</strong>
-                </div>
-                <div>
-                  <span className="hud-label">PLAYERS</span>
-                  <strong>
-                    {members.length} / {room.max_players}
-                  </strong>
-                </div>
+          <div className="mp-room">
+            <header className="mp-room-head">
+              <div className="mp-room-code">
+                <span className="mp-eyebrow">ROOM CODE</span>
+                <strong>{room.room_code}</strong>
               </div>
-              <ul className="multiplayer-members">
-                {members.map((member) => (
-                  <li key={member.userId}>
-                    <span>
-                      {member.username}
-                      {member.userId === room.host_id ? " · HOST" : ""}
-                    </span>
-                    <span>
-                      {member.userId === session.user.id ? "YOU · " : ""}
-                      {member.ready ? "READY" : "NOT READY"}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              {room.status === "waiting" ? (
-                <div className="multiplayer-actions">
+              <button type="button" className="mp-copy" onClick={() => void copyRoomCode()}>
+                {codeCopied ? "COPIED" : "COPY"}
+              </button>
+              <span className={`mp-pill ${room.status === "waiting" ? "mp-pill-wait" : "mp-pill-live"}`}>
+                {room.status === "waiting" ? "WAITING" : "RACE STARTING"}
+              </span>
+            </header>
+            <p className="mp-count">
+              {members.length} / {room.max_players} PLAYERS
+            </p>
+            <ul className="mp-members">
+              {members.map((member) => (
+                <li
+                  key={member.userId}
+                  className={member.userId === session.user.id ? "mp-member mp-member-me" : "mp-member"}
+                >
+                  <span className="mp-avatar" aria-hidden="true">
+                    {member.username.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="mp-member-name">
+                    {member.username}
+                    {member.userId === room.host_id && <span className="mp-tag">HOST</span>}
+                    {member.userId === session.user.id && <span className="mp-tag">YOU</span>}
+                  </span>
+                  <span className={member.ready ? "mp-ready mp-ready-on" : "mp-ready"}>
+                    {member.ready ? "READY" : "NOT READY"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {room.status === "waiting" ? (
+              <>
+                <div className="mp-actions">
                   <button
-                    className="btn-secondary"
+                    className="mp-btn"
                     disabled={busy || !mine}
                     onClick={() => void toggleReady()}
                   >
@@ -889,7 +907,7 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
                   </button>
                   {room.host_id === session.user.id && (
                     <button
-                      className="cta"
+                      className="mp-btn mp-btn-primary"
                       disabled={
                         busy || members.length < 2 || members.some((member) => !member.ready)
                       }
@@ -898,24 +916,35 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
                       START RACE
                     </button>
                   )}
-                  <button className="ghost-btn" disabled={busy} onClick={() => void leaveRoom()}>
-                    LEAVE ROOM
-                  </button>
                 </div>
-              ) : (
-                <div className="multiplayer-actions">
-                  <p className="note" role="status">
-                    {countdown === null
-                      ? "Waiting for the shared race countdown…"
-                      : `Race starts in ${countdown}…`}
-                  </p>
-                  <button className="ghost-btn" disabled={busy} onClick={() => void leaveRoom()}>
-                    LEAVE ROOM
-                  </button>
-                </div>
-              )}
-            </>
-          )}
+                {room.host_id === session.user.id && members.length < 2 && (
+                  <p className="mp-hint">Share the room code. At least 2 players are needed.</p>
+                )}
+                {room.host_id === session.user.id &&
+                  members.length >= 2 &&
+                  members.some((member) => !member.ready) && (
+                    <p className="mp-hint">Waiting for every player to press READY.</p>
+                  )}
+                {room.host_id !== session.user.id && (
+                  <p className="mp-hint">Press READY. The host starts the race.</p>
+                )}
+                <button className="mp-leave" disabled={busy} onClick={() => void leaveRoom()}>
+                  LEAVE ROOM
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="mp-countdown" role="status">
+                  {countdown === null
+                    ? "Waiting for the shared race countdown…"
+                    : `Race starts in ${countdown}…`}
+                </p>
+                <button className="mp-leave" disabled={busy} onClick={() => void leaveRoom()}>
+                  LEAVE ROOM
+                </button>
+              </>
+            )}
+          </div>
         </>
       )}
       {error && (

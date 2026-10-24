@@ -83,7 +83,17 @@ import {
   type VehicleUpgradeLevels,
 } from "./vehicleUpgrades";
 import { PlayerAccount } from "./PlayerAccount";
-import { parseRacePositions, type OnlineRacer } from "./multiplayerState";
+import {
+  MULTIPLAYER_RACE_LENGTH,
+  allRacersFinished,
+  parseRacePositions,
+  parseRaceStandings,
+  stepRacerDisplays,
+  syncRacerDisplays,
+  type OnlineRacer,
+  type RaceStanding,
+  type RacerDisplay,
+} from "./multiplayerState";
 type Phase = "menu" | "playing" | "paused" | "over";
 type Screen = "home" | "garage" | "howto" | "multi" | "controls" | "account" | "achievements" | "upgrades";
 type Settings = { control: "touch" | "tilt"; sens: number; neutral: number; paint: string; name: string };
@@ -93,6 +103,7 @@ type Hud = {
   score: number;
   speed: number;
   lives: number;
+  progress: number;
   boost: number;
   heat: number;
   drift: number;
@@ -182,17 +193,30 @@ function tintPlayer(
 ): HTMLCanvasElement | HTMLImageElement {
   if (!img.naturalWidth) return img;
 
-  if (color === "#ffffff") return img;
+  // Shrink the artwork once. Drawing a very large image every frame can come out
+  // blank (a white box) on some phones, so the game always draws this smaller copy.
+  const MAX_SIDE = 512;
+  const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+  const baseW = Math.max(1, Math.round(img.naturalWidth * scale));
+  const baseH = Math.max(1, Math.round(img.naturalHeight * scale));
+  const base = document.createElement("canvas");
+  base.width = baseW;
+  base.height = baseH;
+  const baseCtx = base.getContext("2d");
+  if (!baseCtx) return img;
+  baseCtx.drawImage(img, 0, 0, baseW, baseH);
+
+  if (color === "#ffffff") return base;
 
   const cv = document.createElement("canvas");
-  cv.width = img.naturalWidth;
-  cv.height = img.naturalHeight;
+  cv.width = baseW;
+  cv.height = baseH;
 
   const ctx = cv.getContext("2d");
-  if (!ctx) return img;
+  if (!ctx) return base;
 
   // Preserve the original artwork and transparency.
-  ctx.drawImage(img, 0, 0);
+  ctx.drawImage(base, 0, 0);
 
   // Apply a color overlay while keeping the original lighting.
   ctx.globalCompositeOperation = "source-atop";
@@ -203,7 +227,7 @@ function tintPlayer(
   // Restore the original image's brightness and details.
   ctx.globalAlpha = 0.30;
   ctx.globalCompositeOperation = "multiply";
-  ctx.drawImage(img, 0, 0);
+  ctx.drawImage(base, 0, 0);
 
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
@@ -235,7 +259,7 @@ export function SketchRun() {
   const playerImg = useRef<HTMLImageElement | null>(null);
   const [phase, setPhaseState] = useState<Phase>("menu");
   const [screenName, setScreen] = useState<Screen>("home");
-  const [hud, setHud] = useState<Hud>({ score: 0, speed: 0, lives: MAX_LIVES, boost: 1, heat: 0, drift: 0, traction: 1, wantedLevel: 0, policeWarning: 0 });
+  const [hud, setHud] = useState<Hud>({ score: 0, speed: 0, lives: MAX_LIVES, progress: 0, boost: 1, heat: 0, drift: 0, traction: 1, wantedLevel: 0, policeWarning: 0 });
   const [best, setBest] = useState(0);
   const [sound, setSound] = useState(true);
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS);
@@ -269,6 +293,12 @@ const [upgradeMessage, setUpgradeMessage] = useState("");
 const [multiplayerRace, setMultiplayerRace] = useState<MultiplayerRaceStart | null>(null);
 const multiplayerRaceRef = useRef<MultiplayerRaceStart | null>(null);
 const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
+const [onlineStandings, setOnlineStandings] = useState<RaceStanding[]>([]);
+const [onlinePlace, setOnlinePlace] = useState<number | null>(null);
+const [onlineMyId, setOnlineMyId] = useState("");
+const [replayBusy, setReplayBusy] = useState(false);
+const [onlineNote, setOnlineNote] = useState("");
+const remoteStepAt = useRef(0);
 
   const world = useRef({
     w: 0, h: 0, roadX: 0, roadW: 0, lanes: 4, laneW: 0,
@@ -283,7 +313,7 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
     rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [] as AchievementId[],
     lives: MAX_LIVES, invuln: 0, boost: 1, boosting: false, boostVis: 0, shake: 0, hitFlash: 0,
     drift: 0, traction: 1, driftCd: 0, driftDir: 0,
-    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[],
+    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(),
     spawnT: 0, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 6, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, propT: 0, heat: 0, bonus: 0, walletSaveFailed: false,
   });
 
@@ -482,7 +512,7 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
       },
       upgradeLevels,
     );
-    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
+    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
     setWalletError("");
     setProgressionError("");
     setFinal(null);
@@ -490,7 +520,7 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
       ? W.roadX + W.laneW * (multiplayerRaceRef.current.seat + 0.5)
       : W.w / 2;
     input.current = blankInput(); touch.current = blankInput();
-    setHud({ score: 0, speed: 0, lives: MAX_LIVES, boost: W.boost, heat: 0, drift: 0, traction: 1, wantedLevel: 0, policeWarning: 0 });
+    setHud({ score: 0, speed: 0, lives: MAX_LIVES, progress: 0, boost: W.boost, heat: 0, drift: 0, traction: 1, wantedLevel: 0, policeWarning: 0 });
   }, []);
 
   const start = useCallback(() => { sfx.current.ensure(); reset(); setPhase("playing"); sfx.current.blip(660, 0.12); setTimeout(() => sfx.current.blip(990, 0.18), 120); }, [reset, setPhase]);
@@ -498,6 +528,9 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
     multiplayerRaceRef.current = race;
     setMultiplayerRace(race);
     setMultiplayerSyncMessage("");
+    setOnlineStandings([]);
+    setOnlinePlace(null);
+    setOnlineNote("");
     start();
   }, [start]);
   const togglePause = useCallback(() => {
@@ -524,9 +557,104 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
     multiplayerRaceRef.current = null;
     setMultiplayerRace(null);
     world.current.remoteRacers = [];
+    world.current.remoteViews.clear();
     setScreen("home");
     setPhase("menu");
   }, [setPhase]);
+
+  /** Tells the server this player crossed the finish line (retries a couple of times). */
+  const reportOnlineFinish = useCallback(async (roomId: string, distance: number) => {
+    let lastMessage = "Could not record your finish.";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { data, error } = await getSupabaseClient().rpc("finish_multiplayer_race", {
+          p_room_id: roomId,
+          p_distance: distance,
+        });
+        if (!error) {
+          if (typeof data === "number") setOnlinePlace(data);
+          setOnlineNote("");
+          return;
+        }
+        lastMessage = `Could not record your finish: ${error.message}`;
+      } catch (error) {
+        lastMessage = error instanceof Error ? error.message : lastMessage;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+    setOnlineNote(lastMessage);
+  }, []);
+
+  /** Replay: put the room back to "waiting" and return to the room page. */
+  const replayOnline = useCallback(async () => {
+    const race = multiplayerRaceRef.current;
+    if (!race) return;
+    setReplayBusy(true);
+    setOnlineNote("");
+    try {
+      const supabase = getSupabaseClient();
+      const { error } = await supabase.rpc("reset_multiplayer_room", { p_room_id: race.roomId });
+      if (error) {
+        // Another player may already have reset the room and started a new race.
+        const { data: roomRow } = await supabase
+          .from("multiplayer_rooms")
+          .select("status, starts_at")
+          .eq("id", race.roomId)
+          .maybeSingle();
+        const startsAt = roomRow?.starts_at ? Date.parse(roomRow.starts_at) : 0;
+        if (!(roomRow?.status === "racing" && startsAt > race.startAt + 1000)) {
+          setOnlineNote(error.message);
+          return;
+        }
+      }
+      multiplayerRaceRef.current = null;
+      setMultiplayerRace(null);
+      world.current.remoteRacers = [];
+      world.current.remoteViews.clear();
+      setScreen("multi");
+      setPhase("menu");
+    } catch (error) {
+      setOnlineNote(error instanceof Error ? error.message : "Could not start a replay.");
+    } finally {
+      setReplayBusy(false);
+    }
+  }, [setPhase]);
+
+  /** After finishing: keep the results table fresh and keep this player marked as present. */
+  useEffect(() => {
+    if (phase !== "over" || !multiplayerRace) return;
+    let active = true;
+    const roomId = multiplayerRace.roomId;
+    let supabase: ReturnType<typeof getSupabaseClient>;
+    try {
+      supabase = getSupabaseClient();
+    } catch (error) {
+      setOnlineNote(error instanceof Error ? error.message : "Online results are unavailable.");
+      return;
+    }
+    void supabase.auth.getSession().then(({ data }) => {
+      if (active) setOnlineMyId(data.session?.user.id ?? "");
+    });
+    const poll = async () => {
+      const { data, error } = await supabase.rpc("get_multiplayer_race_state", { p_room_id: roomId });
+      if (!active) return;
+      if (error) {
+        setOnlineNote(`Could not read the results: ${error.message}`);
+        return;
+      }
+      setOnlineStandings(parseRaceStandings(data));
+    };
+    void poll();
+    const pollTimer = window.setInterval(() => void poll(), 1500);
+    const heartbeat = window.setInterval(() => {
+      void Promise.resolve(supabase.rpc("touch_multiplayer_room", { p_room_id: roomId }));
+    }, 10000);
+    return () => {
+      active = false;
+      window.clearInterval(pollTimer);
+      window.clearInterval(heartbeat);
+    };
+  }, [multiplayerRace, phase]);
 
   useEffect(() => {
     if (phase !== "playing" || !multiplayerRace) return;
@@ -569,10 +697,12 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
         }
 
         raceWorld.remoteRacers = parseRacePositions(data, userId);
+        syncRacerDisplays(raceWorld.remoteViews, raceWorld.remoteRacers, performance.now());
         lastSyncError = "";
         setMultiplayerSyncMessage("");
       };
 
+      let lastRealtimeRefresh = 0;
       channel = supabase
         .channel(`multiplayer-race-${multiplayerRace.roomId}`)
         .on(
@@ -583,7 +713,12 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
             table: "multiplayer_race_positions",
             filter: `room_id=eq.${multiplayerRace.roomId}`,
           },
-          () => void refreshRemoteRacers(),
+          () => {
+            const nowMs = performance.now();
+            if (nowMs - lastRealtimeRefresh < 300) return;
+            lastRealtimeRefresh = nowMs;
+            void refreshRemoteRacers();
+          },
         )
         .on(
           "postgres_changes",
@@ -876,12 +1011,12 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
           car.id ?? `${W.raceId}:collision:${W.entitySequence++}`,
         );
       }
-      W.lives -= 1; W.invuln = 2; W.shake = 0.55; W.hitFlash = 1; W.speed *= 0.5; W.drift = 0;
+      const onlineRace = multiplayerRaceRef.current !== null; if (!onlineRace) W.lives -= 1; W.invuln = onlineRace ? 1.2 : 2; W.shake = 0.55; W.hitFlash = 1; W.speed *= 0.5; W.drift = 0;
       spark(W.px, W.py - W.ph * 0.3, 40, "#ffd27a", 380); spark(W.px, W.py, 20, "#ffffff", 200);
-      pop(message, "#ff7373");
+      pop(onlineRace ? "CRASH · SLOWED" : message, "#ff7373");
       sfx.current.crash();
       if (car.kind === "police") car.y += W.ph * 1.6; else { car.y -= W.ph * 0.6; car.vy = W.speed * 0.2; }
-      if (W.lives <= 0) finish();
+      if (!onlineRace && W.lives <= 0) finish();
     };
 
     const spawnPolice = (difficulty: ReturnType<typeof raceDifficulty>) => {
@@ -1000,6 +1135,12 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
       if (W.px < minX || W.px > maxX) { W.px = Math.max(minX, Math.min(maxX, W.px)); W.pvx *= -0.3; W.speed *= Math.exp(-1.5 * dt); if (Math.random() < 0.5) spark(W.px + (W.px <= minX ? -W.pw / 2 : W.pw / 2), W.py, 2, "#ffb347", 150); }
       const dy = W.speed * dt;
       W.distance += dy; W.scroll = (W.scroll + dy) % 80;
+      const finishingRace = multiplayerRaceRef.current;
+      if (finishingRace && W.distance >= MULTIPLAYER_RACE_LENGTH && phaseRef.current === "playing") {
+        const finishDistance = W.distance;
+        finish();
+        void reportOnlineFinish(finishingRace.roomId, finishDistance);
+      }
       W.invuln = Math.max(0, W.invuln - dt); W.shake = Math.max(0, W.shake - dt); W.hitFlash = Math.max(0, W.hitFlash - dt * 2.5);
 
       // skid marks + smoke
@@ -1590,6 +1731,26 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
       // asphalt patches
       c.fillStyle = "rgba(0,0,0,0.12)";
       for (let i = 0; i < 6; i++) { const y = ((i * 211 + W.scroll * 1) % (h + 200)) - 100; c.fillRect(roadX + ((i * 97) % (roadW - 60)), y + ((W.distance / 1) % 1), 50, 26); }
+      // online race finish line
+      if (multiplayerRaceRef.current) {
+        const finishY = W.py - (MULTIPLAYER_RACE_LENGTH - W.distance);
+        if (finishY > -80 && finishY < h + 80) {
+          const squares = 14;
+          const sq = roadW / squares;
+          c.save();
+          for (let row = 0; row < 2; row++) {
+            for (let col = 0; col < squares; col++) {
+              c.fillStyle = (col + row) % 2 === 0 ? "#f5f5f5" : "#111";
+              c.fillRect(roadX + col * sq, finishY - sq + row * sq, sq + 0.5, sq + 0.5);
+            }
+          }
+          c.fillStyle = "#ffffff";
+          c.font = "bold 18px 'Bebas Neue', sans-serif";
+          c.textAlign = "center";
+          c.fillText("FINISH", roadX + roadW / 2, finishY - sq - 8);
+          c.restore();
+        }
+      }
       // skid marks
       for (const s of W.skids) { c.fillStyle = `rgba(8,8,8,${0.5 * s.a})`; c.fillRect(s.x - 2, s.y - 2, 4, 5); }
       // edge lines + barriers
@@ -1633,7 +1794,13 @@ const [multiplayerSyncMessage, setMultiplayerSyncMessage] = useState("");
       }
       for (const pickup of W.pickups) drawPickup(pickup);
       for (const coin of W.coins) drawCoin(coin);
-      for (const racer of W.remoteRacers) {
+      {
+        const nowMs = performance.now();
+        const stepSeconds = remoteStepAt.current ? Math.min(0.1, (nowMs - remoteStepAt.current) / 1000) : 0.016;
+        remoteStepAt.current = nowMs;
+        stepRacerDisplays(W.remoteViews, nowMs, stepSeconds);
+      }
+      for (const racer of W.remoteViews.values()) {
         const racerX = roadX + racer.laneRatio * roadW;
         const racerY = Math.max(
           -W.ph,
@@ -1745,7 +1912,7 @@ if (spr) {
       render();
       sfx.current.engine(W.speed, ph === "playing", W.heat, t);
       hudT += dt;
-      if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction, wantedLevel: W.pursuit.wantedLevel, policeWarning: W.policeWarning }); }
+      if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, progress: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction, wantedLevel: W.pursuit.wantedLevel, policeWarning: W.policeWarning }); }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -1811,9 +1978,16 @@ if (spr) {
             </div>
             <div className="hud-panel hud-center">
               <div className="hud-value">{hud.speed}<span className="hud-label ml-1">km/h</span></div>
-              <div className="mt-1 flex justify-center gap-1" aria-label={`${hud.lives} lives left`}>
-                {Array.from({ length: MAX_LIVES }).map((_, i) => <span key={i} className={i < hud.lives ? "life-pip" : "life-pip life-pip-empty"} />)}
-              </div>
+              {multiplayerRace ? (
+                <div className="race-progress" role="progressbar" aria-label="Race progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(hud.progress * 100)}>
+                  <div className="race-progress-fill" style={{ width: `${Math.round(hud.progress * 100)}%` }} />
+                  <span className="race-progress-label">FINISH {Math.round(hud.progress * 100)}%</span>
+                </div>
+              ) : (
+                <div className="mt-1 flex justify-center gap-1" aria-label={`${hud.lives} lives left`}>
+                  {Array.from({ length: MAX_LIVES }).map((_, i) => <span key={i} className={i < hud.lives ? "life-pip" : "life-pip life-pip-empty"} />)}
+                </div>
+              )}
               <div className="meter mt-1.5"><div className="meter-fill-boost" style={{ width: `${(hud.boost / world.current.boostCapacity) * 100}%` }} /></div>
               <div className="meter mt-1"><div className="meter-fill-grip" style={{ width: `${hud.traction * 100}%` }} /></div>
               <div className="hud-label">{hud.drift > 0.3 ? "Drifting!" : "Nitro · Grip"}</div>
@@ -2316,7 +2490,7 @@ if (spr) {
         {phase === "over" && final && (
           <div className="menu">
             <div className="menu-card results-card">
-              <p className="kicker">Busted</p>
+              <p className="kicker">{multiplayerRace ? "Finish line" : "Busted"}</p>
               <h2 className="screen-title">Race results</h2>
               <div className="final-score">{final.score.toLocaleString()}</div>
               {final.newBest ? <p className="new-best">★ New best score ★</p> : <p className="hud-label">Best {best.toLocaleString()}</p>}
@@ -2339,18 +2513,37 @@ if (spr) {
                 </section>
               )}
               {final.saveError && <p className="note note-warn" role="alert">{final.saveError}</p>}
-              <ol className="board">
-                {board.slice(0, 5).map((e, i) => <li key={e.date} className={i + 1 === final.rank ? "board-me" : ""}><span>{i + 1}. {e.name}</span><span>{e.score.toLocaleString()}</span></li>)}
-              </ol>
               {multiplayerRace ? (
-                <button className="cta" onClick={toMenu}>LEAVE ONLINE ROOM</button>
+                <section className="race-standings" aria-live="polite">
+                  <h3 className="hud-label">{onlinePlace ? `You finished #${onlinePlace}` : "Recording your finish…"}</h3>
+                  <ol className="board">
+                    {onlineStandings.map((row, i) => (
+                      <li key={row.userId} className={row.userId === onlineMyId ? "board-me" : ""}>
+                        <span>{i + 1}. {row.username}{row.userId === onlineMyId ? " (you)" : ""}</span>
+                        <span>{row.finished && row.finishSeconds !== null ? `${row.finishSeconds.toFixed(1)} s` : "racing…"}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  {!allRacersFinished(onlineStandings) && <p className="note">Waiting for the other racers to finish…</p>}
+                  {onlineNote && <p className="note note-warn" role="alert">{onlineNote}</p>}
+                </section>
+              ) : (
+                <ol className="board">
+                  {board.slice(0, 5).map((e, i) => <li key={e.date} className={i + 1 === final.rank ? "board-me" : ""}><span>{i + 1}. {e.name}</span><span>{e.score.toLocaleString()}</span></li>)}
+                </ol>
+              )}
+              {multiplayerRace ? (
+                <>
+                  <button className="cta" disabled={replayBusy || !allRacersFinished(onlineStandings)} onClick={() => void replayOnline()}>{replayBusy ? "PLEASE WAIT…" : "REPLAY"}</button>
+                  <button className="btn-secondary" disabled={replayBusy} onClick={toMenu}>LEAVE ROOM</button>
+                </>
               ) : (
                 <>
                   <button className="cta" onClick={start}>RACE AGAIN</button>
                   <button className="btn-secondary" onClick={() => { setScreen("garage"); setPhase("menu"); }}>GARAGE</button>
                 </>
               )}
-              <button className="ghost-btn mt-3" onClick={toMenu}>Main menu</button>
+              {!multiplayerRace && <button className="ghost-btn mt-3" onClick={toMenu}>Main menu</button>}
             </div>
           </div>
         )}
