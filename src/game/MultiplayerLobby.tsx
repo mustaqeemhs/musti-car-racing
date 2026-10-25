@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "@/lib/supabase";
+import { WALLET_KEY } from "./garageData";
 import { raceCountdownSeconds } from "./multiplayerState";
+
+const STAKE_OPTIONS = [0, 50, 100, 250, 500, 1000];
+
+function readWalletBalance(): number | null {
+  try {
+    const raw = localStorage.getItem(WALLET_KEY);
+    const profile = raw ? JSON.parse(raw) : null;
+    return profile && typeof profile.balance === "number" && Number.isFinite(profile.balance)
+      ? profile.balance
+      : null;
+  } catch {
+    return null;
+  }
+}
 import { isValidUsername, normalizeUsername } from "./username";
 
 type Room = {
@@ -13,6 +28,7 @@ type Room = {
   starts_at: string | null;
   is_public: boolean;
   created_at: string;
+  stake: number;
 };
 
 type Member = {
@@ -28,14 +44,17 @@ export type MultiplayerRaceStart = {
   roomId: string;
   startAt: number;
   seat: number;
+  stake: number;
 };
 
 type MultiplayerLobbyProps = {
   onRaceStart: (start: MultiplayerRaceStart) => void;
   onBack: () => void;
+  vehicleId: string;
+  paint: string;
 };
 
-export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps) {
+export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: MultiplayerLobbyProps) {
   const [client, setClient] = useState<SupabaseClient | null>(null);
   const [configurationError, setConfigurationError] = useState("");
   const [session, setSession] = useState<Session | null>(null);
@@ -172,7 +191,7 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
       if (!client) return;
       const { data: roomData, error: roomError } = await client
         .from("multiplayer_rooms")
-        .select("id, room_code, host_id, max_players, status, starts_at, is_public, created_at")
+        .select("id, room_code, host_id, max_players, status, starts_at, is_public, created_at, stake")
         .eq("id", id)
         .maybeSingle();
       if (roomError) {
@@ -299,6 +318,47 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
   }, [client, refreshRoom, roomId]);
 
   const mine = members.find((member) => member.userId === session?.user.id);
+
+  const [landscape, setLandscape] = useState(true);
+  const [wallet, setWallet] = useState<number | null>(null);
+  const autoUnreadyRef = useRef(false);
+
+  useEffect(() => {
+    const update = () => setLandscape(window.innerWidth >= window.innerHeight);
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    setWallet(readWalletBalance());
+  }, [room?.id, room?.stake, room?.status]);
+
+  // Tell the other players which car (and colour) this player picked.
+  useEffect(() => {
+    if (!client || !room || !mine || room.status !== "waiting") return;
+    void Promise.resolve(
+      client.rpc("set_multiplayer_vehicle", {
+        p_room_id: room.id,
+        p_vehicle_id: vehicleId,
+        p_paint: paint,
+      }),
+    ).then(({ error: vehicleError }) => {
+      if (vehicleError) console.warn("Could not share the selected vehicle:", vehicleError.message);
+    });
+  }, [client, room?.id, room?.status, mine?.userId, vehicleId, paint]);
+
+  const stake = room?.stake ?? 0;
+  const walletOk = stake === 0 || (wallet !== null && wallet >= stake);
+  const walletMessage =
+    wallet === null
+      ? "Create your guest profile first (Account) to join a staked race."
+      : `You need ${Math.max(0, stake - wallet).toLocaleString()} more Jaa'izah for this stake.`;
+  const canReady = landscape && walletOk;
   useEffect(() => {
     if (!room || room.status !== "racing" || !room.starts_at || !mine) {
       if (room?.status === "waiting") startedRoomRef.current = "";
@@ -316,7 +376,7 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
       setCountdown(raceCountdownSeconds(startAt));
       if (remaining === 0 && startedRoomRef.current !== room.id) {
         startedRoomRef.current = room.id;
-        onRaceStart({ roomId: room.id, startAt, seat: mine.seat });
+        onRaceStart({ roomId: room.id, startAt, seat: mine.seat, stake: room.stake ?? 0 });
       }
     };
     tick();
@@ -526,6 +586,22 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
     setRoomId(data);
   }
 
+  async function changeStake(next: number) {
+    if (!client || !room) return;
+    setBusy(true);
+    setError("");
+    const { error: stakeError } = await client.rpc("set_multiplayer_stake", {
+      p_room_id: room.id,
+      p_stake: next,
+    });
+    setBusy(false);
+    if (stakeError) {
+      setError(stakeError.message);
+      return;
+    }
+    await refreshRoom(room.id);
+  }
+
   async function toggleReady() {
     if (!client || !room || !mine) return;
     setBusy(true);
@@ -556,6 +632,17 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
     }
     await refreshRoom(room.id);
   }
+
+  useEffect(() => {
+    if (landscape || !mine?.ready || !room || room.status !== "waiting") {
+      if (landscape) autoUnreadyRef.current = false;
+      return;
+    }
+    if (autoUnreadyRef.current || busy) return;
+    autoUnreadyRef.current = true;
+    void toggleReady();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [landscape, mine?.ready, room?.status, busy]);
 
   const [codeCopied, setCodeCopied] = useState(false);
 
@@ -875,6 +962,34 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
             <p className="mp-count">
               {members.length} / {room.max_players} PLAYERS
             </p>
+            <div className="mp-stake">
+              <div className="mp-stake-head">
+                <span className="mp-eyebrow">STAKE PER PLAYER</span>
+                <strong>{stake === 0 ? "FREE RACE" : `${stake.toLocaleString()} Jaa'izah`}</strong>
+              </div>
+              {stake > 0 && (
+                <p className="mp-hint mp-left">
+                  Pot: {(stake * members.length).toLocaleString()} Jaa'izah. The winner takes it all.
+                </p>
+              )}
+              {room.host_id === session.user.id && room.status === "waiting" && (
+                <div className="mp-stake-options" role="group" aria-label="Choose the stake">
+                  {STAKE_OPTIONS.map((option) => (
+                    <button
+                      key={option}
+                      className={option === stake ? "mp-chip mp-chip-on" : "mp-chip"}
+                      disabled={busy}
+                      onClick={() => void changeStake(option)}
+                    >
+                      {option === 0 ? "FREE" : option}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {wallet !== null && (
+                <p className="mp-hint mp-left">Your wallet: {wallet.toLocaleString()} Jaa'izah</p>
+              )}
+            </div>
             <ul className="mp-members">
               {members.map((member) => (
                 <li
@@ -900,7 +1015,7 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
                 <div className="mp-actions">
                   <button
                     className="mp-btn"
-                    disabled={busy || !mine}
+                    disabled={busy || !mine || (!mine.ready && !canReady)}
                     onClick={() => void toggleReady()}
                   >
                     {mine?.ready ? "NOT READY" : "READY"}
@@ -917,6 +1032,10 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
                     </button>
                   )}
                 </div>
+                {!landscape && (
+                  <p className="mp-hint mp-warn">Turn your phone sideways (landscape) to get ready.</p>
+                )}
+                {landscape && !walletOk && <p className="mp-hint mp-warn">{walletMessage}</p>}
                 {room.host_id === session.user.id && members.length < 2 && (
                   <p className="mp-hint">Share the room code. At least 2 players are needed.</p>
                 )}
@@ -938,6 +1057,7 @@ export function MultiplayerLobby({ onRaceStart, onBack }: MultiplayerLobbyProps)
                   {countdown === null
                     ? "Waiting for the shared race countdown…"
                     : `Race starts in ${countdown}…`}
+                  {stake > 0 && countdown !== null ? ` Stake: ${stake.toLocaleString()}` : ""}
                 </p>
                 <button className="mp-leave" disabled={busy} onClick={() => void leaveRoom()}>
                   LEAVE ROOM

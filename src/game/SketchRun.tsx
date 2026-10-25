@@ -48,6 +48,7 @@ import {
   playerBikeRenderSize,
   vehicleSprite,
   VEHICLE_DEFS,
+  type VehicleDef,
 } from "./carArt";
 
 import {
@@ -84,8 +85,14 @@ import {
 } from "./vehicleUpgrades";
 import { PlayerAccount } from "./PlayerAccount";
 import {
+  METRES_PER_UNIT,
   MULTIPLAYER_RACE_LENGTH,
-  allRacersFinished,
+  allRacersDone,
+  applyLivePosition,
+  classifyContact,
+  formatDistanceToFinish,
+  liveRaceOrder,
+  parseLivePosition,
   parseRacePositions,
   parseRaceStandings,
   stepRacerDisplays,
@@ -186,6 +193,23 @@ function makeGrain(): HTMLCanvasElement {
   return g;
 }
 
+
+/** Adds (or removes) Jaa'izah from the guest wallet. Returns the new balance, or null if there is no wallet. */
+function adjustWallet(delta: number): number | null {
+  try {
+    const raw = localStorage.getItem(WALLET_KEY);
+    const profile = raw ? JSON.parse(raw) : null;
+    if (!profile || typeof profile.balance !== "number" || !Number.isFinite(profile.balance)) return null;
+    const next = Math.max(0, Math.round(profile.balance + delta));
+    localStorage.setItem(WALLET_KEY, JSON.stringify({ ...profile, balance: next }));
+    return next;
+  } catch {
+    return null;
+  }
+}
+
+const SEAT_COLORS = ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b"];
+const remotePlayerSprites = new Map<string, HTMLCanvasElement | HTMLImageElement>();
 
 function tintPlayer(
   img: HTMLImageElement,
@@ -299,6 +323,12 @@ const [onlineMyId, setOnlineMyId] = useState("");
 const [replayBusy, setReplayBusy] = useState(false);
 const [onlineNote, setOnlineNote] = useState("");
 const remoteStepAt = useRef(0);
+const finishRef = useRef<() => void>(() => {});
+const [raceMenuOpen, setRaceMenuOpen] = useState(false);
+const [isPortrait, setIsPortrait] = useState(false);
+const [onlinePot, setOnlinePot] = useState<{ pot: number; won: boolean } | null>(null);
+const [livePlace, setLivePlace] = useState(1);
+const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; me: boolean; name: string }[]>([]);
 
   const world = useRef({
     w: 0, h: 0, roadX: 0, roadW: 0, lanes: 4, laneW: 0,
@@ -313,7 +343,7 @@ const remoteStepAt = useRef(0);
     rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [] as AchievementId[],
     lives: MAX_LIVES, invuln: 0, boost: 1, boosting: false, boostVis: 0, shake: 0, hitFlash: 0,
     drift: 0, traction: 1, driftCd: 0, driftDir: 0,
-    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(),
+    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0,
     spawnT: 0, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 6, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, propT: 0, heat: 0, bonus: 0, walletSaveFailed: false,
   });
 
@@ -512,7 +542,7 @@ const remoteStepAt = useRef(0);
       },
       upgradeLevels,
     );
-    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
+    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
     setWalletError("");
     setProgressionError("");
     setFinal(null);
@@ -531,9 +561,31 @@ const remoteStepAt = useRef(0);
     setOnlineStandings([]);
     setOnlinePlace(null);
     setOnlineNote("");
+    setOnlinePot(null);
+    setRaceMenuOpen(false);
+    setLivePlace(1);
+    setMapDots([]);
+    // Everyone puts their stake in the pot when the race starts.
+    if (race.stake > 0) {
+      const key = `musti-stake-${race.roomId}-${race.startAt}`;
+      try {
+        if (!localStorage.getItem(key)) {
+          localStorage.setItem(key, "1");
+          const balance = adjustWallet(-race.stake);
+          if (balance !== null) setGarageBalance(balance);
+        }
+      } catch {
+        /* storage unavailable: the race still starts */
+      }
+    }
     start();
   }, [start]);
   const togglePause = useCallback(() => {
+    // Online races never freeze: this only opens a small menu while the race keeps running.
+    if (multiplayerRaceRef.current) {
+      if (phaseRef.current === "playing") setRaceMenuOpen((open) => !open);
+      return;
+    }
     if (phaseRef.current === "playing") setPhase("paused");
     else if (phaseRef.current === "paused") { sfx.current.ensure(); setPhase("playing"); }
   }, [setPhase]);
@@ -563,16 +615,37 @@ const remoteStepAt = useRef(0);
   }, [setPhase]);
 
   /** Tells the server this player crossed the finish line (retries a couple of times). */
-  const reportOnlineFinish = useCallback(async (roomId: string, distance: number) => {
+  const reportOnlineFinish = useCallback(async (race: MultiplayerRaceStart, distance: number) => {
     let lastMessage = "Could not record your finish.";
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const { data, error } = await getSupabaseClient().rpc("finish_multiplayer_race", {
-          p_room_id: roomId,
+          p_room_id: race.roomId,
           p_distance: distance,
         });
         if (!error) {
-          if (typeof data === "number") setOnlinePlace(data);
+          const row = Array.isArray(data) ? data[0] : data;
+          const place = typeof row?.place === "number" ? row.place : null;
+          const pot = typeof row?.pot === "number" ? row.pot : 0;
+          if (place !== null) setOnlinePlace(place);
+          if (pot > 0) {
+            if (place === 1) {
+              // The winner takes the whole pot (paid once per race).
+              const key = `musti-pot-${race.roomId}-${race.startAt}`;
+              try {
+                if (!localStorage.getItem(key)) {
+                  localStorage.setItem(key, "1");
+                  const balance = adjustWallet(pot);
+                  if (balance !== null) setGarageBalance(balance);
+                  setOnlinePot({ pot, won: true });
+                }
+              } catch {
+                setOnlinePot({ pot, won: true });
+              }
+            } else {
+              setOnlinePot({ pot, won: false });
+            }
+          }
           setOnlineNote("");
           return;
         }
@@ -663,7 +736,10 @@ const remoteStepAt = useRef(0);
     let raceIsActive = true;
     let userId = "";
     let sendingPosition = false;
+    let refreshing = false;
+    let lastRosterRefresh = 0;
     let lastSyncError = "";
+    let channelReady = false;
     let channel: RealtimeChannel | null = null;
     const raceWorld = world.current;
     const setSyncError = (message: string) => {
@@ -676,50 +752,58 @@ const remoteStepAt = useRef(0);
 
     try {
       const supabase = getSupabaseClient();
-      void supabase.auth.getUser().then(({ data, error }) => {
+      // The session lives in the browser, so this does not call the server.
+      void supabase.auth.getSession().then(({ data, error }) => {
         if (!active) return;
-        if (error || !data.user) {
+        if (error || !data.session) {
           setSyncError(error?.message ?? "Sign in again to synchronize this race.");
           return;
         }
-        userId = data.user.id;
+        userId = data.session.user.id;
       });
 
-      const refreshRemoteRacers = async () => {
-        if (!raceIsActive) return;
-        const { data, error } = await supabase.rpc("get_multiplayer_race_state", {
-          p_room_id: multiplayerRace.roomId,
-        });
-        if (!active) return;
-        if (error) {
-          setSyncError(`Could not read online racer positions: ${error.message}`);
-          return;
+      /** Full roster from the database: names, cars, finished and DNF flags. */
+      const refreshRoster = async () => {
+        if (!raceIsActive || refreshing) return;
+        refreshing = true;
+        lastRosterRefresh = performance.now();
+        try {
+          if (!userId) {
+            const { data: sessionData } = await supabase.auth.getSession();
+            userId = sessionData.session?.user.id ?? "";
+          }
+          const { data, error } = await supabase.rpc("get_multiplayer_race_state", {
+            p_room_id: multiplayerRace.roomId,
+          });
+          if (!active) return;
+          if (error) {
+            setSyncError(`Could not read online racer positions: ${error.message}`);
+            return;
+          }
+          raceWorld.remoteRacers = parseRacePositions(data, userId);
+          syncRacerDisplays(raceWorld.remoteViews, raceWorld.remoteRacers, performance.now());
+          const me = parseRaceStandings(data).find((row) => row.userId === userId);
+          if (me?.dnf && phaseRef.current === "playing") {
+            setOnlineNote("Time's up. You were marked DNF (did not finish).");
+            finishRef.current();
+          }
+          lastSyncError = "";
+          setMultiplayerSyncMessage("");
+        } finally {
+          refreshing = false;
         }
-
-        raceWorld.remoteRacers = parseRacePositions(data, userId);
-        syncRacerDisplays(raceWorld.remoteViews, raceWorld.remoteRacers, performance.now());
-        lastSyncError = "";
-        setMultiplayerSyncMessage("");
       };
 
-      let lastRealtimeRefresh = 0;
       channel = supabase
-        .channel(`multiplayer-race-${multiplayerRace.roomId}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "multiplayer_race_positions",
-            filter: `room_id=eq.${multiplayerRace.roomId}`,
-          },
-          () => {
-            const nowMs = performance.now();
-            if (nowMs - lastRealtimeRefresh < 300) return;
-            lastRealtimeRefresh = nowMs;
-            void refreshRemoteRacers();
-          },
-        )
+        .channel(`multiplayer-race-${multiplayerRace.roomId}`, {
+          config: { broadcast: { self: false, ack: false } },
+        })
+        .on("broadcast", { event: "pos" }, ({ payload }) => {
+          const message = parseLivePosition(payload);
+          if (!message || message.u === userId) return;
+          const known = applyLivePosition(raceWorld.remoteViews, message, performance.now());
+          if (!known && performance.now() - lastRosterRefresh > 1000) void refreshRoster();
+        })
         .on(
           "postgres_changes",
           {
@@ -741,12 +825,36 @@ const remoteStepAt = useRef(0);
         .subscribe((status) => {
           if (!active) return;
           if (status === "SUBSCRIBED") {
-            void refreshRemoteRacers();
+            channelReady = true;
+            void refreshRoster();
           } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            channelReady = false;
             setMultiplayerSyncMessage("Realtime connection lost; reconnecting…");
           }
         });
 
+      // Live position: fast, goes straight to the other players without touching the database.
+      const liveTimer = window.setInterval(() => {
+        if (!channel || !channelReady || !userId || !active || !raceIsActive) return;
+        if (phaseRef.current !== "playing") return;
+        const W = raceWorld;
+        void Promise.resolve(
+          channel.send({
+            type: "broadcast",
+            event: "pos",
+            payload: {
+              u: userId,
+              l: Math.max(0, Math.min(1, (W.px - W.roadX) / W.roadW)),
+              d: W.distance,
+              v: W.speed,
+            },
+          }),
+        ).catch(() => {
+          /* a dropped live packet is harmless; the next one follows in a moment */
+        });
+      }, 160);
+
+      // Saved copy: lets late joiners and the results table see where everyone is.
       const positionTimer = window.setInterval(() => {
         if (!userId || sendingPosition || !active || !raceIsActive) return;
         sendingPosition = true;
@@ -768,10 +876,10 @@ const remoteStepAt = useRef(0);
           .finally(() => {
             sendingPosition = false;
           });
-      }, 200);
-      const refreshTimer = window.setInterval(() => {
-        if (raceIsActive) void refreshRemoteRacers();
       }, 1000);
+      const rosterTimer = window.setInterval(() => {
+        if (raceIsActive) void refreshRoster();
+      }, 1500);
       const maintenanceTimer = window.setInterval(() => {
         if (!raceIsActive || !active) return;
         void Promise.resolve(supabase.rpc("cleanup_expired_multiplayer_rooms")).then(({ error }) => {
@@ -783,10 +891,12 @@ const remoteStepAt = useRef(0);
 
       return () => {
         active = false;
+        window.clearInterval(liveTimer);
         window.clearInterval(positionTimer);
-        window.clearInterval(refreshTimer);
+        window.clearInterval(rosterTimer);
         window.clearInterval(maintenanceTimer);
         raceWorld.remoteRacers = [];
+        raceWorld.remoteViews.clear();
         if (channel) void supabase.removeChannel(channel);
       };
     } catch (error) {
@@ -796,10 +906,22 @@ const remoteStepAt = useRef(0);
       return () => {
         active = false;
         raceWorld.remoteRacers = [];
+        raceWorld.remoteViews.clear();
         if (channel) void channel.unsubscribe();
       };
     }
   }, [multiplayerRace, phase]);
+  useEffect(() => {
+    const update = () => setIsPortrait(window.innerHeight > window.innerWidth);
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, []);
+
   const toggleSound = useCallback(() => {
     setSound((s) => { const n = !s; sfx.current.enabled = n; localStorage.setItem(SOUND_KEY, n ? "1" : "0"); if (n) sfx.current.ensure(); return n; });
   }, []);
@@ -815,10 +937,10 @@ const remoteStepAt = useRef(0);
       if (k) input.current[k] = true;
       if (e.code === "KeyP" || e.code === "Escape") togglePause();
       if (e.code === "KeyM") toggleSound();
-      if (e.code === "Enter" && (phaseRef.current === "menu" || phaseRef.current === "over") && !e.repeat) { e.preventDefault(); start(); }
+      if (e.code === "Enter" && (phaseRef.current === "menu" || phaseRef.current === "over") && !multiplayerRaceRef.current && !e.repeat) { e.preventDefault(); start(); }
     };
     const up = (e: KeyboardEvent) => { const k = map[e.code]; if (k) input.current[k] = false; };
-    const blur = () => { input.current = blankInput(); touch.current = blankInput(); if (phaseRef.current === "playing") setPhase("paused"); };
+    const blur = () => { input.current = blankInput(); touch.current = blankInput(); if (phaseRef.current === "playing" && !multiplayerRaceRef.current) setPhase("paused"); };
     window.addEventListener("keydown", down); window.addEventListener("keyup", up); window.addEventListener("blur", blur);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); window.removeEventListener("blur", blur); };
   }, [start, togglePause, toggleSound, setPhase]);
@@ -999,6 +1121,7 @@ const remoteStepAt = useRef(0);
       sfx.current.blip(180, 0.6, "sawtooth", 0.15);
     };
 
+    finishRef.current = finish;
     const hit = (
       car: Car,
       message = car.kind === "police" ? "POLICE HIT · -1 LIFE" : "CRASH · -1 LIFE",
@@ -1139,7 +1262,41 @@ const remoteStepAt = useRef(0);
       if (finishingRace && W.distance >= MULTIPLAYER_RACE_LENGTH && phaseRef.current === "playing") {
         const finishDistance = W.distance;
         finish();
-        void reportOnlineFinish(finishingRace.roomId, finishDistance);
+        void reportOnlineFinish(finishingRace, finishDistance);
+      }
+      // Racers bump into each other: the car behind loses speed, the car in front gets a small push.
+      if (finishingRace && phaseRef.current === "playing") {
+        W.bumpCd = Math.max(0, W.bumpCd - dt);
+        if (W.bumpCd === 0) {
+          for (const racer of W.remoteViews.values()) {
+            if (racer.finished) continue;
+            const rx = W.roadX + racer.laneRatio * W.roadW;
+            const ry = W.py - (racer.distance - W.distance);
+            const contact = classifyContact(rx - W.px, ry - W.py, W.pw, W.ph);
+            if (contact === "none") continue;
+            W.bumpCd = 0.45;
+            const away = W.px >= rx ? 1 : -1;
+            const minX = W.roadX + W.pw / 2;
+            const maxX = W.roadX + W.roadW - W.pw / 2;
+            if (contact === "rear-ending") {
+              W.speed *= 0.82;
+              W.px = Math.max(minX, Math.min(maxX, W.px + away * W.pw * 0.3));
+              W.shake = Math.max(W.shake, 0.35);
+              pop("BUMP", "#ffd27a");
+            } else if (contact === "rear-ended") {
+              W.speed *= 1.05;
+              W.shake = Math.max(W.shake, 0.2);
+            } else {
+              W.speed *= 0.95;
+              W.px = Math.max(minX, Math.min(maxX, W.px + away * W.pw * 0.35));
+              W.shake = Math.max(W.shake, 0.25);
+              pop("SIDE SWIPE", "#ffd27a");
+            }
+            sfx.current.blip(140, 0.1);
+            spark(W.px, W.py - W.ph * 0.4, 14, "#ffd27a", 220);
+            break;
+          }
+        }
       }
       W.invuln = Math.max(0, W.invuln - dt); W.shake = Math.max(0, W.shake - dt); W.hitFlash = Math.max(0, W.hitFlash - dt * 2.5);
 
@@ -1731,25 +1888,46 @@ const remoteStepAt = useRef(0);
       // asphalt patches
       c.fillStyle = "rgba(0,0,0,0.12)";
       for (let i = 0; i < 6; i++) { const y = ((i * 211 + W.scroll * 1) % (h + 200)) - 100; c.fillRect(roadX + ((i * 97) % (roadW - 60)), y + ((W.distance / 1) % 1), 50, 26); }
-      // online race finish line
+      // online race finish line: distance boards, a wide checkered strip and a gantry
       if (multiplayerRaceRef.current) {
         const finishY = W.py - (MULTIPLAYER_RACE_LENGTH - W.distance);
-        if (finishY > -80 && finishY < h + 80) {
-          const squares = 14;
+        c.save();
+        c.textAlign = "center";
+        for (const metres of [500, 300, 100]) {
+          const boardY = finishY + metres / METRES_PER_UNIT;
+          if (boardY < -40 || boardY > h + 40) continue;
+          c.fillStyle = "rgba(255,255,255,0.55)";
+          c.fillRect(roadX, boardY - 3, roadW, 6);
+          c.fillStyle = "#ffffff";
+          c.font = "bold 16px 'Bebas Neue', sans-serif";
+          c.fillText(`${metres} m`, roadX + roadW / 2, boardY - 10);
+        }
+        if (finishY > -160 && finishY < h + 160) {
+          const squares = 18;
           const sq = roadW / squares;
-          c.save();
-          for (let row = 0; row < 2; row++) {
+          const rows = 5;
+          for (let row = 0; row < rows; row++) {
             for (let col = 0; col < squares; col++) {
               c.fillStyle = (col + row) % 2 === 0 ? "#f5f5f5" : "#111";
-              c.fillRect(roadX + col * sq, finishY - sq + row * sq, sq + 0.5, sq + 0.5);
+              c.fillRect(roadX + col * sq, finishY - sq * 2.5 + row * sq, sq + 0.5, sq + 0.5);
             }
           }
+          // gantry across the road
+          const gantryY = finishY - sq * 2.5 - 46;
+          c.fillStyle = "rgba(10,10,14,0.92)";
+          c.fillRect(roadX - 10, gantryY, roadW + 20, 40);
+          c.fillStyle = "#ff3b3b";
+          c.fillRect(roadX - 10, gantryY + 36, roadW + 20, 4);
+          c.fillStyle = "#3b82f6";
+          c.fillRect(roadX - 10, gantryY, roadW + 20, 4);
           c.fillStyle = "#ffffff";
-          c.font = "bold 18px 'Bebas Neue', sans-serif";
-          c.textAlign = "center";
-          c.fillText("FINISH", roadX + roadW / 2, finishY - sq - 8);
-          c.restore();
+          c.font = "bold 28px 'Bebas Neue', sans-serif";
+          c.fillText("FINISH", roadX + roadW / 2, gantryY + 30);
+          c.fillStyle = "#222";
+          c.fillRect(roadX - 18, gantryY, 8, 70);
+          c.fillRect(roadX + roadW + 10, gantryY, 8, 70);
         }
+        c.restore();
       }
       // skid marks
       for (const s of W.skids) { c.fillStyle = `rgba(8,8,8,${0.5 * s.a})`; c.fillRect(s.x - 2, s.y - 2, 4, 5); }
@@ -1794,34 +1972,72 @@ const remoteStepAt = useRef(0);
       }
       for (const pickup of W.pickups) drawPickup(pickup);
       for (const coin of W.coins) drawCoin(coin);
-      {
+      if (W.remoteViews.size > 0) {
         const nowMs = performance.now();
         const stepSeconds = remoteStepAt.current ? Math.min(0.1, (nowMs - remoteStepAt.current) / 1000) : 0.016;
         remoteStepAt.current = nowMs;
         stepRacerDisplays(W.remoteViews, nowMs, stepSeconds);
-      }
-      for (const racer of W.remoteViews.values()) {
-        const racerX = roadX + racer.laneRatio * roadW;
-        const racerY = Math.max(
-          -W.ph,
-          Math.min(W.h + W.ph, W.py - (racer.distance - W.distance) * 0.12),
-        );
-        if (racerY < -W.ph || racerY > W.h + W.ph) continue;
-        const sprite = vehicleSprite("super", "#47b9ff", W.pw, W.ph);
-        c.save();
-        c.globalAlpha = 0.9;
-        c.drawImage(
-          sprite,
-          racerX - sprite.width / 4,
-          racerY - sprite.height / 4,
-          sprite.width / 2,
-          sprite.height / 2,
-        );
-        c.fillStyle = "#e9f7ff";
-        c.font = "bold 10px 'Space Mono', monospace";
-        c.textAlign = "center";
-        c.fillText(racer.username, racerX, racerY - W.ph * 0.7, W.laneW * 1.5);
-        c.restore();
+        const racers = [...W.remoteViews.values()].sort((first, second) => first.distance - second.distance);
+        for (const racer of racers) {
+          const racerX = roadX + racer.laneRatio * roadW;
+          const racerY = W.py - (racer.distance - W.distance);
+          const color = SEAT_COLORS[racer.seat] ?? "#aaaaaa";
+          if (racerY <= -W.ph || racerY >= W.h + W.ph) {
+            if (racerY <= -W.ph && !racer.finished) {
+              // a racer far ahead: show a small arrow at the top edge
+              const arrowX = Math.max(roadX + 14, Math.min(roadX + roadW - 14, racerX));
+              c.save();
+              c.fillStyle = color;
+              c.globalAlpha = 0.9;
+              c.beginPath();
+              c.moveTo(arrowX, 18);
+              c.lineTo(arrowX - 9, 34);
+              c.lineTo(arrowX + 9, 34);
+              c.closePath();
+              c.fill();
+              c.fillStyle = "#e9f7ff";
+              c.font = "bold 10px 'Space Mono', monospace";
+              c.textAlign = "center";
+              c.fillText(`${racer.username} ${formatDistanceToFinish(racer.distance - W.distance)}`, arrowX, 48);
+              c.restore();
+            }
+            continue;
+          }
+          const def: VehicleDef | undefined = VEHICLE_DEFS.find((vehicle) => vehicle.id === racer.vehicleId) ?? VEHICLE_DEFS[0];
+          const paintColor = racer.paint ?? "#ffffff";
+          let sprite: HTMLCanvasElement | HTMLImageElement | null = null;
+          const racerModel = def?.model;
+          if (racerModel === "musti") {
+            sprite = remotePlayerSprites.get(paintColor) ?? null;
+            if (!sprite && playerImg.current) {
+              sprite = tintPlayer(playerImg.current, paintColor);
+              remotePlayerSprites.set(paintColor, sprite);
+            }
+          } else if (racerModel) {
+            sprite = vehicleSprite(racerModel, paintColor, W.pw, W.ph);
+          }
+          c.save();
+          c.translate(racerX, racerY);
+          if (sprite) {
+            if (def?.cat === "bike") {
+              const size = playerBikeRenderSize(W.pw, W.ph);
+              drawBikeSprite(c, sprite as HTMLCanvasElement, W.pw, W.ph, -size.width / 2, -size.height / 2, size.width, size.height);
+            } else {
+              const carWidth = W.pw * 1.08;
+              c.drawImage(sprite, -carWidth / 2, -W.ph / 2, carWidth, W.ph);
+            }
+          } else {
+            c.fillStyle = color;
+            c.fillRect(-W.pw / 2, -W.ph / 2, W.pw, W.ph);
+          }
+          c.fillStyle = color;
+          c.fillRect(-W.pw * 0.5, W.ph * 0.5 + 4, W.pw, 3);
+          c.fillStyle = "#e9f7ff";
+          c.font = "bold 11px 'Space Mono', monospace";
+          c.textAlign = "center";
+          c.fillText(racer.finished ? `${racer.username} 🏁` : racer.username, 0, -W.ph * 0.62, W.laneW * 1.6);
+          c.restore();
+        }
       }
       // player
       const blink = W.invuln > 0 && Math.floor(t * 12) % 2 === 0;
@@ -1912,7 +2128,19 @@ if (spr) {
       render();
       sfx.current.engine(W.speed, ph === "playing", W.heat, t);
       hudT += dt;
-      if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, progress: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction, wantedLevel: W.pursuit.wantedLevel, policeWarning: W.policeWarning }); }
+      if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, progress: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction, wantedLevel: W.pursuit.wantedLevel, policeWarning: W.policeWarning });
+        const onlineRace = multiplayerRaceRef.current;
+        if (onlineRace) {
+          const dots = [{ id: "me", p: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), color: SEAT_COLORS[onlineRace.seat] ?? "#ffffff", me: true, name: "You" }];
+          const others: { userId: string; distance: number }[] = [];
+          for (const racer of W.remoteViews.values()) {
+            dots.push({ id: racer.userId, p: Math.max(0, Math.min(1, racer.distance / MULTIPLAYER_RACE_LENGTH)), color: SEAT_COLORS[racer.seat] ?? "#aaaaaa", me: false, name: racer.username });
+            others.push({ userId: racer.userId, distance: racer.distance });
+          }
+          setMapDots(dots);
+          setLivePlace(liveRaceOrder("me", W.distance, others));
+        }
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -1979,9 +2207,23 @@ if (spr) {
             <div className="hud-panel hud-center">
               <div className="hud-value">{hud.speed}<span className="hud-label ml-1">km/h</span></div>
               {multiplayerRace ? (
-                <div className="race-progress" role="progressbar" aria-label="Race progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(hud.progress * 100)}>
-                  <div className="race-progress-fill" style={{ width: `${Math.round(hud.progress * 100)}%` }} />
-                  <span className="race-progress-label">FINISH {Math.round(hud.progress * 100)}%</span>
+                <div className="race-map" aria-label="Race map">
+                  <div className="race-map-top">
+                    <span className="race-map-place">P{livePlace}/{Math.max(1, mapDots.length)}</span>
+                    <span className="race-map-dist">{formatDistanceToFinish((1 - hud.progress) * MULTIPLAYER_RACE_LENGTH)} to finish</span>
+                  </div>
+                  <div className="race-map-track">
+                    <div className="race-map-fill" style={{ width: `${Math.round(hud.progress * 100)}%` }} />
+                    {mapDots.map((dot) => (
+                      <span
+                        key={dot.id}
+                        className={dot.me ? "race-dot race-dot-me" : "race-dot"}
+                        style={{ left: `${dot.p * 100}%`, background: dot.color }}
+                        title={dot.name}
+                      />
+                    ))}
+                    <span className="race-map-flag" aria-hidden="true">🏁</span>
+                  </div>
                 </div>
               ) : (
                 <div className="mt-1 flex justify-center gap-1" aria-label={`${hud.lives} lives left`}>
@@ -2413,6 +2655,8 @@ if (spr) {
                 <MultiplayerLobby
                   onRaceStart={startMultiplayerRace}
                   onBack={() => setScreen("home")}
+                  vehicleId={selectedVehicle}
+                  paint={settings.paint}
                 />
                 <h3 className="hud-label mt-4">Local leaderboard · this device</h3>
                 <ol className="board">
@@ -2473,6 +2717,21 @@ if (spr) {
         )}
 
 
+        {multiplayerRace && phase === "playing" && raceMenuOpen && (
+          <div className="race-menu" role="dialog" aria-label="Race menu">
+            <p className="note">The race keeps going for everyone.</p>
+            <button className="cta race-menu-btn" onClick={() => setRaceMenuOpen(false)}>BACK TO RACE</button>
+            <button className="btn-secondary" onClick={toMenu}>LEAVE RACE (DNF)</button>
+          </div>
+        )}
+
+        {multiplayerRace && phase === "playing" && isPortrait && (
+          <div className="rotate-overlay" role="alert">
+            <div className="rotate-icon" aria-hidden="true">⟳</div>
+            <p>Turn your phone sideways. The race is still running!</p>
+          </div>
+        )}
+
         {phase === "paused" && (
           <div className="menu">
             <div className="menu-card">
@@ -2516,15 +2775,22 @@ if (spr) {
               {multiplayerRace ? (
                 <section className="race-standings" aria-live="polite">
                   <h3 className="hud-label">{onlinePlace ? `You finished #${onlinePlace}` : "Recording your finish…"}</h3>
+                  {onlinePot && (
+                    <p className={onlinePot.won ? "note pot-won" : "note"}>
+                      {onlinePot.won
+                        ? `You won the pot: +${onlinePot.pot.toLocaleString()} Jaa'izah`
+                        : `The ${onlinePot.pot.toLocaleString()} Jaa'izah pot went to the winner.`}
+                    </p>
+                  )}
                   <ol className="board">
                     {onlineStandings.map((row, i) => (
                       <li key={row.userId} className={row.userId === onlineMyId ? "board-me" : ""}>
                         <span>{i + 1}. {row.username}{row.userId === onlineMyId ? " (you)" : ""}</span>
-                        <span>{row.finished && row.finishSeconds !== null ? `${row.finishSeconds.toFixed(1)} s` : "racing…"}</span>
+                        <span>{row.finished && row.finishSeconds !== null ? `${row.finishSeconds.toFixed(1)} s` : row.dnf ? "DNF" : "racing…"}</span>
                       </li>
                     ))}
                   </ol>
-                  {!allRacersFinished(onlineStandings) && <p className="note">Waiting for the other racers to finish…</p>}
+                  {!allRacersDone(onlineStandings) && <p className="note">Waiting for the other racers to finish…</p>}
                   {onlineNote && <p className="note note-warn" role="alert">{onlineNote}</p>}
                 </section>
               ) : (
@@ -2534,7 +2800,7 @@ if (spr) {
               )}
               {multiplayerRace ? (
                 <>
-                  <button className="cta" disabled={replayBusy || !allRacersFinished(onlineStandings)} onClick={() => void replayOnline()}>{replayBusy ? "PLEASE WAIT…" : "REPLAY"}</button>
+                  <button className="cta" disabled={replayBusy || !allRacersDone(onlineStandings)} onClick={() => void replayOnline()}>{replayBusy ? "PLEASE WAIT…" : "REPLAY"}</button>
                   <button className="btn-secondary" disabled={replayBusy} onClick={toMenu}>LEAVE ROOM</button>
                 </>
               ) : (

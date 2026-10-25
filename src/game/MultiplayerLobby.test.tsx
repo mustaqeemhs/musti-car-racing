@@ -41,7 +41,7 @@ describe("MultiplayerLobby email-code authentication", () => {
   it("requests an email code without a redirect and verifies it in the same screen", async () => {
     const session = { user: { id: "authenticated-user" } };
     authMock.verifyOtp.mockResolvedValue({ data: { session }, error: null });
-    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />);
+    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />);
 
     fireEvent.change(await screen.findByLabelText("Email address"), {
       target: { value: "driver@example.com" },
@@ -80,7 +80,7 @@ describe("MultiplayerLobby email-code authentication", () => {
           finishRequest = resolve;
         }),
     );
-    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />);
+    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />);
 
     fireEvent.change(await screen.findByLabelText("Email address"), {
       target: { value: "driver@example.com" },
@@ -103,7 +103,7 @@ describe("MultiplayerLobby email-code authentication", () => {
       data: { session: null },
       error: { message: "Token has expired or is invalid", status: 400 },
     });
-    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />);
+    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />);
 
     fireEvent.change(await screen.findByLabelText("Email address"), {
       target: { value: "driver@example.com" },
@@ -123,7 +123,7 @@ describe("MultiplayerLobby email-code authentication", () => {
     authMock.signInWithOtp.mockResolvedValue({
       error: { message: "Email rate limit exceeded", status: 429 },
     });
-    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />);
+    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />);
 
     fireEvent.change(await screen.findByLabelText("Email address"), {
       target: { value: "driver@example.com" },
@@ -140,7 +140,7 @@ describe("MultiplayerLobby email-code authentication", () => {
       Object.assign(new Error("Failed to fetch"), { name: "AuthRetryableFetchError" }),
     );
     const { unmount } = render(
-      <MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />,
+      <MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />,
     );
     fireEvent.change(await screen.findByLabelText("Email address"), {
       target: { value: "driver@example.com" },
@@ -152,7 +152,7 @@ describe("MultiplayerLobby email-code authentication", () => {
     authMock.signInWithOtp.mockResolvedValue({
       error: { message: "Invalid API key", status: 401 },
     });
-    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />);
+    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />);
     fireEvent.change(await screen.findByLabelText("Email address"), {
       target: { value: "driver@example.com" },
     });
@@ -165,7 +165,7 @@ describe("MultiplayerLobby email-code authentication", () => {
       throw new Error("Supabase is not configured. Check the environment variables.");
     });
 
-    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />);
+    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />);
 
     expect(
       await screen.findByText(/Supabase is not configured\. Check the environment variables\./),
@@ -178,7 +178,7 @@ describe("MultiplayerLobby email-code authentication", () => {
       error: { message: "Unsupported provider: email", status: 422 },
     });
     const { unmount } = render(
-      <MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />,
+      <MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />,
     );
     fireEvent.change(await screen.findByLabelText("Email address"), {
       target: { value: "driver@example.com" },
@@ -193,7 +193,7 @@ describe("MultiplayerLobby email-code authentication", () => {
     authMock.signInWithOtp.mockResolvedValueOnce({
       error: { message: "SMTP provider rejected the message", status: 500 },
     });
-    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} />);
+    render(<MultiplayerLobby onRaceStart={vi.fn()} onBack={vi.fn()} vehicleId="musti-gt" paint="#ffffff" />);
     fireEvent.change(await screen.findByLabelText("Email address"), {
       target: { value: "driver@example.com" },
     });
