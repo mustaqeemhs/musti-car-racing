@@ -578,3 +578,13 @@ html, body { max-width: 100%; overflow-x: hidden; -webkit-text-size-adjust: 100%
 .rotate-overlay { position: absolute; inset: 0; z-index: 60; display: grid; place-content: center; gap: .8rem; padding: 2rem; text-align: center; color: var(--paper); background: rgba(5, 5, 8, .9); }
 .rotate-icon { font-size: 3.5rem; animation: rotate-hint 1.8s ease-in-out infinite; }
 @keyframes rotate-hint { 0% { transform: rotate(0deg); } 60%, 100% { transform: rotate(-90deg); } }
+
+/* ===== Career mode and network debug ===== */
+.career-card { max-width: 34rem; display: grid; gap: .9rem; }
+.career-tiers { display: grid; gap: .6rem; }
+.career-tier { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .8rem 1rem; text-align: left; border: 1px solid color-mix(in oklab, var(--paper) 18%, transparent); border-radius: 8px; background: color-mix(in oklab, var(--paper) 5%, transparent); }
+.career-info { display: grid; gap: .2rem; min-width: 0; }
+.career-info strong { font-family: "Bebas Neue", sans-serif; font-size: 1.4rem; font-weight: 400; letter-spacing: .08em; }
+.career-locked { opacity: .55; }
+.career-btn { flex: none; width: auto; font-size: 1.1rem; padding: .55rem 1.1rem; }
+.net-debug { position: absolute; left: .5rem; bottom: .5rem; z-index: 50; margin: 0; padding: .4rem .6rem; font-size: .6rem; line-height: 1.4; color: #9dffb0; background: rgba(0, 0, 0, .72); border-radius: 6px; pointer-events: none; white-space: pre; }

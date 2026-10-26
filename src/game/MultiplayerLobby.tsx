@@ -319,20 +319,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
 
   const mine = members.find((member) => member.userId === session?.user.id);
 
-  const [landscape, setLandscape] = useState(true);
   const [wallet, setWallet] = useState<number | null>(null);
-  const autoUnreadyRef = useRef(false);
-
-  useEffect(() => {
-    const update = () => setLandscape(window.innerWidth >= window.innerHeight);
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("orientationchange", update);
-    return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("orientationchange", update);
-    };
-  }, []);
 
   useEffect(() => {
     setWallet(readWalletBalance());
@@ -358,7 +345,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
     wallet === null
       ? "Create your guest profile first (Account) to join a staked race."
       : `You need ${Math.max(0, stake - wallet).toLocaleString()} more Jaa'izah for this stake.`;
-  const canReady = landscape && walletOk;
+  const canReady = walletOk;
   useEffect(() => {
     if (!room || room.status !== "racing" || !room.starts_at || !mine) {
       if (room?.status === "waiting") startedRoomRef.current = "";
@@ -632,17 +619,6 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
     }
     await refreshRoom(room.id);
   }
-
-  useEffect(() => {
-    if (landscape || !mine?.ready || !room || room.status !== "waiting") {
-      if (landscape) autoUnreadyRef.current = false;
-      return;
-    }
-    if (autoUnreadyRef.current || busy) return;
-    autoUnreadyRef.current = true;
-    void toggleReady();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [landscape, mine?.ready, room?.status, busy]);
 
   const [codeCopied, setCodeCopied] = useState(false);
 
@@ -1032,10 +1008,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
                     </button>
                   )}
                 </div>
-                {!landscape && (
-                  <p className="mp-hint mp-warn">Turn your phone sideways (landscape) to get ready.</p>
-                )}
-                {landscape && !walletOk && <p className="mp-hint mp-warn">{walletMessage}</p>}
+                {!walletOk && <p className="mp-hint mp-warn">{walletMessage}</p>}
                 {room.host_id === session.user.id && members.length < 2 && (
                   <p className="mp-hint">Share the room code. At least 2 players are needed.</p>
                 )}

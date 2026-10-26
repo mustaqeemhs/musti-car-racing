@@ -97,7 +97,7 @@ describe("multiplayer state", () => {
   it("formats the distance to the finish", () => {
     expect(formatDistanceToFinish(0)).toBe("0 m");
     expect(formatDistanceToFinish(6925)).toBe("500 m");
-    expect(formatDistanceToFinish(36000)).toBe("2.6 km");
+    expect(formatDistanceToFinish(60000)).toBe("4.3 km");
   });
 
   it("glides another racer's car toward new positions instead of jumping", () => {
@@ -150,5 +150,34 @@ describe("multiplayer state", () => {
     expect(classifyContact(5, -80, 60, 110)).toBe("rear-ending");
     expect(classifyContact(5, 80, 60, 110)).toBe("rear-ended");
     expect(classifyContact(50, 10, 60, 110)).toBe("side");
+  });
+});
+
+describe("smooth racing without live packets", () => {
+  it("keeps following the saved copy when live packets stop, and prefers live packets while they flow", () => {
+    const displays = new Map<string, RacerDisplay>();
+    syncRacerDisplays(displays, [racer(1000)], 0);
+    applyLivePosition(displays, { u: "friend", l: 0.5, d: 1100, v: 300 }, 100);
+
+    // a saved copy arriving while live packets are fresh does not override them
+    syncRacerDisplays(displays, [racer(900)], 400);
+    expect(displays.get("friend")?.targetDistance).toBe(1100);
+
+    // after the live packets stop, the saved copy is used again
+    syncRacerDisplays(displays, [racer(1500)], 2500);
+    expect(displays.get("friend")?.targetDistance).toBe(1500);
+  });
+
+  it("does not move computer-driven rivals with network smoothing", () => {
+    const displays = new Map<string, RacerDisplay>();
+    syncRacerDisplays(displays, [racer(0)], 0);
+    const display = displays.get("friend")!;
+    display.local = true;
+    display.distance = 500;
+    display.targetDistance = 500;
+    stepRacerDisplays(displays, 5000, 0.016);
+    expect(display.distance).toBe(500);
+    syncRacerDisplays(displays, [racer(9999)], 6000);
+    expect(displays.get("friend")?.targetDistance).toBe(500);
   });
 });

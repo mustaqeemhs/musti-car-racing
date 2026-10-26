@@ -101,8 +101,25 @@ import {
   type RaceStanding,
   type RacerDisplay,
 } from "./multiplayerState";
+import { EngineSynth, engineProfileFor, unlockAudioSession, type EngineProfile } from "./engineAudio";
+import {
+  CAREER_KEY,
+  CAREER_TIERS,
+  EMPTY_CAREER,
+  careerStandings,
+  createAiRacers,
+  parseCareer,
+  placeOf,
+  prizeFor,
+  recordCareerResult,
+  stepAiRacer,
+  type AiRacer,
+  type CareerProgress,
+  type CareerStanding,
+  type CareerTier,
+} from "./career";
 type Phase = "menu" | "playing" | "paused" | "over";
-type Screen = "home" | "garage" | "howto" | "multi" | "controls" | "account" | "achievements" | "upgrades";
+type Screen = "home" | "garage" | "howto" | "multi" | "career" | "controls" | "account" | "achievements" | "upgrades";
 type Settings = { control: "touch" | "tilt"; sens: number; neutral: number; paint: string; name: string };
 type Entry = { name: string; score: number; time: number; distance: number; date: number };
 type Popup = { text: string; x: number; y: number; life: number; color: string };
@@ -142,29 +159,43 @@ const makeRaceId = () =>
 /* ---------------- audio ---------------- */
 class Sfx {
   ctx: AudioContext | null = null;
-  osc: OscillatorNode | null = null;
-  gain: GainNode | null = null;
   siren: OscillatorNode | null = null;
   sirenGain: GainNode | null = null;
+  synth: EngineSynth | null = null;
+  profile: EngineProfile | null = null;
   enabled = true;
+  /** Must be called from a tap or key press: browsers keep sound off until then. */
   ensure() {
+    unlockAudioSession();
     if (this.ctx) { void this.ctx.resume(); return; }
     const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AC) return;
     this.ctx = new AC();
-    this.osc = this.ctx.createOscillator(); this.osc.type = "sawtooth";
-    this.gain = this.ctx.createGain(); this.gain.gain.value = 0;
-    const f = this.ctx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 700;
-    this.osc.connect(f).connect(this.gain).connect(this.ctx.destination); this.osc.start();
+    void this.ctx.resume();
     this.siren = this.ctx.createOscillator(); this.siren.type = "triangle";
     this.sirenGain = this.ctx.createGain(); this.sirenGain.gain.value = 0;
     this.siren.connect(this.sirenGain).connect(this.ctx.destination); this.siren.start();
+    this.synth = new EngineSynth(this.ctx);
+    if (this.profile) this.synth.setProfile(this.profile);
   }
-  engine(speed: number, active: boolean, heat: number, t: number) {
-    if (!this.ctx || !this.osc || !this.gain || !this.siren || !this.sirenGain) return;
+  /** Chooses the engine sound that matches the car or bike being driven. */
+  setVehicle(profile: EngineProfile) {
+    this.profile = profile;
+    this.synth?.setProfile(profile);
+  }
+  engine(speed: number, active: boolean, heat: number, t: number, drive?: { maxSpeed: number; boosting: boolean; braking: boolean; drifting: boolean; dt: number }) {
+    if (!this.ctx || !this.siren || !this.sirenGain) return;
     const on = active && this.enabled;
-    this.osc.frequency.setTargetAtTime(45 + speed * 0.15, this.ctx.currentTime, 0.05);
-    this.gain.gain.setTargetAtTime(on ? 0.045 : 0, this.ctx.currentTime, 0.08);
+    this.synth?.update({
+      speed,
+      maxSpeed: drive?.maxSpeed ?? 1200,
+      active,
+      enabled: this.enabled,
+      boosting: drive?.boosting ?? false,
+      braking: drive?.braking ?? false,
+      drifting: drive?.drifting ?? false,
+      dt: drive?.dt ?? 0.016,
+    });
     this.siren.frequency.setTargetAtTime(Math.sin(t * 5) > 0 ? 960 : 720, this.ctx.currentTime, 0.02);
     this.sirenGain.gain.setTargetAtTime(on ? 0.015 * heat : 0, this.ctx.currentTime, 0.1);
   }
@@ -324,8 +355,16 @@ const [replayBusy, setReplayBusy] = useState(false);
 const [onlineNote, setOnlineNote] = useState("");
 const remoteStepAt = useRef(0);
 const finishRef = useRef<() => void>(() => {});
+const debugRef = useRef(false);
+const careerRef = useRef<{ tier: CareerTier } | null>(null);
+const startingCareerRef = useRef(false);
+const [careerRun, setCareerRun] = useState<CareerTier | null>(null);
+const [career, setCareer] = useState<CareerProgress>(EMPTY_CAREER);
+const [careerResult, setCareerResult] = useState<{ tier: CareerTier; place: number; prize: number; standings: CareerStanding[]; unlockedNext: boolean } | null>(null);
+const [roomMoved, setRoomMoved] = useState(false);
+const [roomClosed, setRoomClosed] = useState(false);
+const [netDebug, setNetDebug] = useState("");
 const [raceMenuOpen, setRaceMenuOpen] = useState(false);
-const [isPortrait, setIsPortrait] = useState(false);
 const [onlinePot, setOnlinePot] = useState<{ pot: number; won: boolean } | null>(null);
 const [livePlace, setLivePlace] = useState(1);
 const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; me: boolean; name: string }[]>([]);
@@ -343,7 +382,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [] as AchievementId[],
     lives: MAX_LIVES, invuln: 0, boost: 1, boosting: false, boostVis: 0, shake: 0, hitFlash: 0,
     drift: 0, traction: 1, driftCd: 0, driftDir: 0,
-    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0,
+    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[],
     spawnT: 0, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 6, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, propT: 0, heat: 0, bonus: 0, walletSaveFailed: false,
   });
 
@@ -542,7 +581,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       },
       upgradeLevels,
     );
-    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
+    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[], spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
     setWalletError("");
     setProgressionError("");
     setFinal(null);
@@ -553,7 +592,12 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     setHud({ score: 0, speed: 0, lives: MAX_LIVES, progress: 0, boost: W.boost, heat: 0, drift: 0, traction: 1, wantedLevel: 0, policeWarning: 0 });
   }, []);
 
-  const start = useCallback(() => { sfx.current.ensure(); reset(); setPhase("playing"); sfx.current.blip(660, 0.12); setTimeout(() => sfx.current.blip(990, 0.18), 120); }, [reset, setPhase]);
+  const start = useCallback(() => {
+    if (!startingCareerRef.current) { careerRef.current = null; setCareerRun(null); setCareerResult(null); world.current.ai = []; }
+    sfx.current.ensure();
+    sfx.current.setVehicle(engineProfileFor(VEHICLE_DEFS.find((vehicle) => vehicle.id === selectedVehicleRef.current)));
+    reset(); setPhase("playing"); sfx.current.blip(660, 0.12); setTimeout(() => sfx.current.blip(990, 0.18), 120);
+  }, [reset, setPhase]);
   const startMultiplayerRace = useCallback((race: MultiplayerRaceStart) => {
     multiplayerRaceRef.current = race;
     setMultiplayerRace(race);
@@ -562,6 +606,8 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     setOnlinePlace(null);
     setOnlineNote("");
     setOnlinePot(null);
+    setRoomMoved(false);
+    setRoomClosed(false);
     setRaceMenuOpen(false);
     setLivePlace(1);
     setMapDots([]);
@@ -589,6 +635,67 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     if (phaseRef.current === "playing") setPhase("paused");
     else if (phaseRef.current === "paused") { sfx.current.ensure(); setPhase("playing"); }
   }, [setPhase]);
+  useEffect(() => {
+    try {
+      setCareer(parseCareer(localStorage.getItem(CAREER_KEY)));
+    } catch {
+      /* storage unavailable: career starts fresh */
+    }
+  }, []);
+
+  const startCareer = useCallback((tierId: CareerTier["id"]) => {
+    const tier = CAREER_TIERS.find((item) => item.id === tierId);
+    if (!tier) return;
+    multiplayerRaceRef.current = null;
+    setMultiplayerRace(null);
+    setCareerResult(null);
+    setMapDots([]);
+    setLivePlace(1);
+    careerRef.current = { tier };
+    setCareerRun(tier);
+    startingCareerRef.current = true;
+    try {
+      start();
+    } finally {
+      startingCareerRef.current = false;
+    }
+    const W = world.current;
+    const carIds = VEHICLE_DEFS.filter((vehicle) => vehicle.cat === "car").map((vehicle) => vehicle.id);
+    W.ai = createAiRacers(tier, carIds, Math.random);
+    W.remoteViews.clear();
+    const now = performance.now();
+    for (const ai of W.ai) {
+      W.remoteViews.set(ai.id, {
+        userId: ai.id, username: ai.name, seat: ai.seat, vehicleId: ai.vehicleId, paint: ai.paint,
+        laneRatio: ai.lane, distance: ai.distance, finished: false, dnf: false,
+        targetLane: ai.lane, targetDistance: ai.distance, targetAt: now, speed: 0, lastLiveAt: 0, local: true,
+      });
+    }
+  }, [start]);
+
+  /** The player crossed the line in a career race: work out the place, pay the prize, unlock the next cup. */
+  const completeCareer = useCallback((tier: CareerTier, myTime: number) => {
+    const W = world.current;
+    const standings = careerStandings(myTime, W.ai, MULTIPLAYER_RACE_LENGTH, "You");
+    const place = placeOf(standings);
+    const prize = prizeFor(tier, place);
+    let unlockedNext = false;
+    try {
+      const before = parseCareer(localStorage.getItem(CAREER_KEY));
+      const after = recordCareerResult(before, tier.id, place);
+      unlockedNext = after.unlocked > before.unlocked;
+      localStorage.setItem(CAREER_KEY, JSON.stringify(after));
+      setCareer(after);
+    } catch {
+      /* the race result still shows */
+    }
+    if (prize > 0) {
+      const balance = adjustWallet(prize);
+      if (balance !== null) setGarageBalance(balance);
+    }
+    setCareerResult({ tier, place, prize, standings, unlockedNext });
+  }, []);
+
   const toMenu = useCallback(() => {
     const race = multiplayerRaceRef.current;
     if (race) {
@@ -610,6 +717,10 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     setMultiplayerRace(null);
     world.current.remoteRacers = [];
     world.current.remoteViews.clear();
+    careerRef.current = null;
+    setCareerRun(null);
+    setCareerResult(null);
+    world.current.ai = [];
     setScreen("home");
     setPhase("menu");
   }, [setPhase]);
@@ -709,13 +820,25 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       if (active) setOnlineMyId(data.session?.user.id ?? "");
     });
     const poll = async () => {
-      const { data, error } = await supabase.rpc("get_multiplayer_race_state", { p_room_id: roomId });
+      const [state, roomResult] = await Promise.all([
+        supabase.rpc("get_multiplayer_race_state", { p_room_id: roomId }),
+        supabase.from("multiplayer_rooms").select("status, starts_at").eq("id", roomId).maybeSingle(),
+      ]);
       if (!active) return;
-      if (error) {
-        setOnlineNote(`Could not read the results: ${error.message}`);
+      const roomRow = roomResult.data;
+      const startsAt = roomRow?.starts_at ? Date.parse(roomRow.starts_at) : 0;
+      // Another player already pressed REPLAY: the room is waiting again (or a new race began).
+      const moved =
+        !!roomRow &&
+        (roomRow.status === "waiting" || (roomRow.status === "racing" && startsAt > multiplayerRace.startAt + 1000));
+      setRoomMoved(moved);
+      setRoomClosed(!roomResult.error && roomRow === null);
+      if (moved) return; // keep showing the final table
+      if (state.error) {
+        setOnlineNote(`Could not read the results: ${state.error.message}`);
         return;
       }
-      setOnlineStandings(parseRaceStandings(data));
+      setOnlineStandings(parseRaceStandings(state.data));
     };
     void poll();
     const pollTimer = window.setInterval(() => void poll(), 1500);
@@ -876,10 +999,10 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
           .finally(() => {
             sendingPosition = false;
           });
-      }, 1000);
+      }, 500);
       const rosterTimer = window.setInterval(() => {
         if (raceIsActive) void refreshRoster();
-      }, 1500);
+      }, 700);
       const maintenanceTimer = window.setInterval(() => {
         if (!raceIsActive || !active) return;
         void Promise.resolve(supabase.rpc("cleanup_expired_multiplayer_rooms")).then(({ error }) => {
@@ -912,13 +1035,15 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     }
   }, [multiplayerRace, phase]);
   useEffect(() => {
-    const update = () => setIsPortrait(window.innerHeight > window.innerWidth);
-    update();
-    window.addEventListener("resize", update);
-    window.addEventListener("orientationchange", update);
+    const unlock = () => sfx.current.ensure();
+    window.addEventListener("pointerdown", unlock, { passive: true });
+    window.addEventListener("touchend", unlock, { passive: true });
+    window.addEventListener("keydown", unlock);
+    debugRef.current = new URLSearchParams(window.location.search).has("debug");
     return () => {
-      window.removeEventListener("resize", update);
-      window.removeEventListener("orientationchange", update);
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("touchend", unlock);
+      window.removeEventListener("keydown", unlock);
     };
   }, []);
 
@@ -1134,7 +1259,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
           car.id ?? `${W.raceId}:collision:${W.entitySequence++}`,
         );
       }
-      const onlineRace = multiplayerRaceRef.current !== null; if (!onlineRace) W.lives -= 1; W.invuln = onlineRace ? 1.2 : 2; W.shake = 0.55; W.hitFlash = 1; W.speed *= 0.5; W.drift = 0;
+      const onlineRace = multiplayerRaceRef.current !== null || careerRef.current !== null; if (!onlineRace) W.lives -= 1; W.invuln = onlineRace ? 1.2 : 2; W.shake = 0.55; W.hitFlash = 1; W.speed *= 0.5; W.drift = 0;
       spark(W.px, W.py - W.ph * 0.3, 40, "#ffd27a", 380); spark(W.px, W.py, 20, "#ffffff", 200);
       pop(onlineRace ? "CRASH · SLOWED" : message, "#ff7373");
       sfx.current.crash();
@@ -1264,8 +1389,27 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
         finish();
         void reportOnlineFinish(finishingRace, finishDistance);
       }
+      const careerNow = careerRef.current;
+      if (careerNow && W.distance >= MULTIPLAYER_RACE_LENGTH && phaseRef.current === "playing") {
+        const myTime = W.time;
+        finish();
+        completeCareer(careerNow.tier, myTime);
+      }
+      if (careerNow && phaseRef.current === "playing") {
+        const aiContext = { time: W.time, playerDistance: W.distance, cruise: W.cruise, raceLength: MULTIPLAYER_RACE_LENGTH, tier: careerNow.tier, rand: Math.random };
+        const aiNow = performance.now();
+        for (const ai of W.ai) {
+          stepAiRacer(ai, dt, aiContext);
+          const view = W.remoteViews.get(ai.id);
+          if (view) {
+            view.distance = ai.distance; view.targetDistance = ai.distance;
+            view.laneRatio = ai.lane; view.targetLane = ai.lane;
+            view.finished = ai.finishedAt !== null; view.speed = 0; view.targetAt = aiNow;
+          }
+        }
+      }
       // Racers bump into each other: the car behind loses speed, the car in front gets a small push.
-      if (finishingRace && phaseRef.current === "playing") {
+      if ((finishingRace || careerNow) && phaseRef.current === "playing") {
         W.bumpCd = Math.max(0, W.bumpCd - dt);
         if (W.bumpCd === 0) {
           for (const racer of W.remoteViews.values()) {
@@ -1275,6 +1419,12 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
             const contact = classifyContact(rx - W.px, ry - W.py, W.pw, W.ph);
             if (contact === "none") continue;
             W.bumpCd = 0.45;
+            const rival = careerNow ? W.ai.find((entry) => entry.id === racer.userId) : undefined;
+            if (rival) {
+              if (contact === "rear-ending") rival.speed *= 1.05;
+              else if (contact === "rear-ended") rival.speed *= 0.85;
+              else rival.speed *= 0.96;
+            }
             const away = W.px >= rx ? 1 : -1;
             const minX = W.roadX + W.pw / 2;
             const maxX = W.roadX + W.roadW - W.pw / 2;
@@ -1889,7 +2039,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       c.fillStyle = "rgba(0,0,0,0.12)";
       for (let i = 0; i < 6; i++) { const y = ((i * 211 + W.scroll * 1) % (h + 200)) - 100; c.fillRect(roadX + ((i * 97) % (roadW - 60)), y + ((W.distance / 1) % 1), 50, 26); }
       // online race finish line: distance boards, a wide checkered strip and a gantry
-      if (multiplayerRaceRef.current) {
+      if (multiplayerRaceRef.current || careerRef.current) {
         const finishY = W.py - (MULTIPLAYER_RACE_LENGTH - W.distance);
         c.save();
         c.textAlign = "center";
@@ -2126,12 +2276,18 @@ if (spr) {
       else if (ph === "menu") { t += dt; W.scroll = (W.scroll + 220 * dt) % 80; for (const p of W.props) p.y += 220 * dt; W.propT -= 220 * dt; if (W.propT <= 0) { W.props.push({ kind: Math.random() < 0.5 ? "lamp" : "building", side: Math.random() < 0.5 ? -1 : 1, y: -140, seed: Math.random() }); W.propT = 160; } W.props = W.props.filter((p) => p.y < W.h + 200); updateFx(dt); }
       else if (ph === "over") { t += dt; updateFx(dt); }
       render();
-      sfx.current.engine(W.speed, ph === "playing", W.heat, t);
+      sfx.current.engine(W.speed, ph === "playing", W.heat, t, {
+        maxSpeed: W.vehiclePerformance.maxSpeed,
+        boosting: W.boosting,
+        braking: input.current.down,
+        drifting: Math.abs(W.drift) > 0.35,
+        dt,
+      });
       hudT += dt;
       if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, progress: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction, wantedLevel: W.pursuit.wantedLevel, policeWarning: W.policeWarning });
         const onlineRace = multiplayerRaceRef.current;
-        if (onlineRace) {
-          const dots = [{ id: "me", p: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), color: SEAT_COLORS[onlineRace.seat] ?? "#ffffff", me: true, name: "You" }];
+        if (onlineRace || careerRef.current) {
+          const dots = [{ id: "me", p: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), color: SEAT_COLORS[onlineRace?.seat ?? 0] ?? "#ffffff", me: true, name: "You" }];
           const others: { userId: string; distance: number }[] = [];
           for (const racer of W.remoteViews.values()) {
             dots.push({ id: racer.userId, p: Math.max(0, Math.min(1, racer.distance / MULTIPLAYER_RACE_LENGTH)), color: SEAT_COLORS[racer.seat] ?? "#aaaaaa", me: false, name: racer.username });
@@ -2139,6 +2295,10 @@ if (spr) {
           }
           setMapDots(dots);
           setLivePlace(liveRaceOrder("me", W.distance, others));
+          if (debugRef.current && onlineRace) {
+            const nowMs = performance.now();
+            setNetDebug([...W.remoteViews.values()].map((racer) => `${racer.username}: ${racer.lastLiveAt ? `${Math.round(nowMs - racer.lastLiveAt)} ms since live packet` : "NO LIVE PACKETS"} · ${Math.round(racer.speed)} u/s`).join("\n"));
+          }
         }
       }
       raf = requestAnimationFrame(loop);
@@ -2206,7 +2366,7 @@ if (spr) {
             </div>
             <div className="hud-panel hud-center">
               <div className="hud-value">{hud.speed}<span className="hud-label ml-1">km/h</span></div>
-              {multiplayerRace ? (
+              {multiplayerRace || careerRun ? (
                 <div className="race-map" aria-label="Race map">
                   <div className="race-map-top">
                     <span className="race-map-place">P{livePlace}/{Math.max(1, mapDots.length)}</span>
@@ -2303,6 +2463,7 @@ if (spr) {
                   <nav className="menu-grid" aria-label="Main menu">
                     <button className="btn-secondary" onClick={() => setScreen("garage")}>Garage</button>
                     <button className="btn-secondary" onClick={() => setScreen("howto")}>How to play</button>
+                    <button className="btn-secondary" onClick={() => setScreen("career")}>Career</button>
                     <button className="btn-secondary" onClick={() => setScreen("multi")}>Multiplayer</button>
                     <button className="btn-secondary" onClick={() => setScreen("controls")}>Controls</button>
                     <button className="btn-secondary" onClick={() => setScreen("achievements")}>Achievements</button>
@@ -2315,6 +2476,33 @@ if (spr) {
                     <button className="icon-btn" onClick={toggleSound} aria-label={sound ? "Mute sound" : "Unmute sound"}>{sound ? "🔊" : "🔇"}</button>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {screenName === "career" && (
+              <div className="menu-card career-card">
+                <h2 className="screen-title">CAREER</h2>
+                <p className="note">Race three AI rivals over the full course. Finish on the podium to open the next cup and win Jaa'izah.</p>
+                <div className="career-tiers">
+                  {CAREER_TIERS.map((tier, index) => {
+                    const locked = index >= career.unlocked;
+                    const best = career.best[tier.id];
+                    return (
+                      <div key={tier.id} className={locked ? "career-tier career-locked" : "career-tier"}>
+                        <div className="career-info">
+                          <strong>{tier.name}</strong>
+                          <span className="hud-label">{tier.blurb}</span>
+                          <span className="note">Prizes: 1st {tier.rewards[0]} · 2nd {tier.rewards[1]} · 3rd {tier.rewards[2]} Jaa'izah</span>
+                          {best ? <span className="hud-label">Best finish: #{best}</span> : null}
+                        </div>
+                        <button className="cta career-btn" disabled={locked} onClick={() => startCareer(tier.id)}>
+                          {locked ? "LOCKED" : "START"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button className="btn-secondary" onClick={() => setScreen("home")}>BACK</button>
               </div>
             )}
 
@@ -2717,18 +2905,13 @@ if (spr) {
         )}
 
 
+        {netDebug && multiplayerRace && phase === "playing" && <pre className="net-debug">{netDebug}</pre>}
+
         {multiplayerRace && phase === "playing" && raceMenuOpen && (
           <div className="race-menu" role="dialog" aria-label="Race menu">
             <p className="note">The race keeps going for everyone.</p>
             <button className="cta race-menu-btn" onClick={() => setRaceMenuOpen(false)}>BACK TO RACE</button>
             <button className="btn-secondary" onClick={toMenu}>LEAVE RACE (DNF)</button>
-          </div>
-        )}
-
-        {multiplayerRace && phase === "playing" && isPortrait && (
-          <div className="rotate-overlay" role="alert">
-            <div className="rotate-icon" aria-hidden="true">⟳</div>
-            <p>Turn your phone sideways. The race is still running!</p>
           </div>
         )}
 
@@ -2749,7 +2932,7 @@ if (spr) {
         {phase === "over" && final && (
           <div className="menu">
             <div className="menu-card results-card">
-              <p className="kicker">{multiplayerRace ? "Finish line" : "Busted"}</p>
+              <p className="kicker">{multiplayerRace || careerResult ? "Finish line" : "Busted"}</p>
               <h2 className="screen-title">Race results</h2>
               <div className="final-score">{final.score.toLocaleString()}</div>
               {final.newBest ? <p className="new-best">★ New best score ★</p> : <p className="hud-label">Best {best.toLocaleString()}</p>}
@@ -2790,8 +2973,26 @@ if (spr) {
                       </li>
                     ))}
                   </ol>
-                  {!allRacersDone(onlineStandings) && <p className="note">Waiting for the other racers to finish…</p>}
+                  {roomMoved && <p className="note pot-won">A player already started the next round. Press REPLAY to join them.</p>}
+                  {roomClosed && <p className="note note-warn">This room was closed. Leave the room to go back to the menu.</p>}
+                  {!roomMoved && !allRacersDone(onlineStandings) && <p className="note">Waiting for the other racers to finish…</p>}
                   {onlineNote && <p className="note note-warn" role="alert">{onlineNote}</p>}
+                </section>
+              ) : careerResult ? (
+                <section className="race-standings" aria-live="polite">
+                  <h3 className="hud-label">{`${careerResult.tier.name}: you finished #${careerResult.place}`}</h3>
+                  <p className={careerResult.prize > 0 ? "note pot-won" : "note"}>
+                    {careerResult.prize > 0 ? `Prize: +${careerResult.prize.toLocaleString()} Jaa'izah` : "No prize this time."}
+                  </p>
+                  {careerResult.unlockedNext && <p className="note pot-won">New cup unlocked! Open the Career menu.</p>}
+                  <ol className="board">
+                    {careerResult.standings.map((row, i) => (
+                      <li key={row.id} className={row.me ? "board-me" : ""}>
+                        <span>{i + 1}. {row.name}</span>
+                        <span>{row.finished ? `${row.seconds.toFixed(1)} s` : `≈ ${row.seconds.toFixed(1)} s`}</span>
+                      </li>
+                    ))}
+                  </ol>
                 </section>
               ) : (
                 <ol className="board">
@@ -2800,8 +3001,13 @@ if (spr) {
               )}
               {multiplayerRace ? (
                 <>
-                  <button className="cta" disabled={replayBusy || !allRacersDone(onlineStandings)} onClick={() => void replayOnline()}>{replayBusy ? "PLEASE WAIT…" : "REPLAY"}</button>
+                  <button className="cta" disabled={replayBusy || roomClosed || !(allRacersDone(onlineStandings) || roomMoved)} onClick={() => void replayOnline()}>{replayBusy ? "PLEASE WAIT…" : "REPLAY"}</button>
                   <button className="btn-secondary" disabled={replayBusy} onClick={toMenu}>LEAVE ROOM</button>
+                </>
+              ) : careerResult ? (
+                <>
+                  <button className="cta" onClick={() => startCareer(careerResult.tier.id)}>RACE AGAIN</button>
+                  <button className="btn-secondary" onClick={() => { careerRef.current = null; setCareerRun(null); world.current.ai = []; setScreen("career"); setPhase("menu"); }}>CAREER MENU</button>
                 </>
               ) : (
                 <>

@@ -1,5 +1,5 @@
-/** How far (in game distance units) a multiplayer race lasts. About 70 seconds of racing. */
-export const MULTIPLAYER_RACE_LENGTH = 36000;
+/** How far (in game distance units) a race lasts: about 4.3 km, roughly two minutes of racing. */
+export const MULTIPLAYER_RACE_LENGTH = 60000;
 
 /** Game speed is shown as speed * 0.26 km/h, so one game unit is about 0.0722 metres. */
 export const METRES_PER_UNIT = 0.0722;
@@ -169,10 +169,16 @@ export type RacerDisplay = {
   targetDistance: number;
   targetAt: number;
   speed: number;
+  /** When the last live (broadcast) packet arrived, in ms. 0 = none yet. */
+  lastLiveAt: number;
+  /** True for computer-driven rivals: the game moves them itself, so smoothing skips them. */
+  local: boolean;
 };
 
 const MAX_RACER_SPEED = 2400; // distance units per second
-const MAX_EXTRAPOLATION_SECONDS = 0.8;
+const LIVE_EXTRAPOLATION_SECONDS = 0.5; // live packets come several times a second
+const SAVED_EXTRAPOLATION_SECONDS = 1.8; // only the slower saved copy is available
+const LIVE_FRESH_MS = 900;
 
 /** Call whenever the full racer list arrives from the server. `now` is in milliseconds. */
 export function syncRacerDisplays(
@@ -199,12 +205,15 @@ export function syncRacerDisplays(
         targetDistance: racer.distance,
         targetAt: now,
         speed: 0,
+        lastLiveAt: 0,
+        local: false,
       });
       continue;
     }
-    // Live broadcast updates are fresher than the database copy. Only accept the
-    // database copy when it is further ahead, or when the car has finished.
-    const fresher = now - existing.targetAt > 1500;
+    if (existing.local) continue;
+    // While live packets are arriving they are fresher than the saved copy,
+    // so the saved copy only fills in when the live packets stop.
+    const liveIsFlowing = existing.lastLiveAt > 0 && now - existing.lastLiveAt < LIVE_FRESH_MS;
     existing.username = racer.username;
     existing.seat = racer.seat;
     existing.vehicleId = racer.vehicleId;
@@ -216,7 +225,7 @@ export function syncRacerDisplays(
       existing.targetDistance = racer.distance;
       existing.targetLane = racer.laneRatio;
       existing.targetAt = now;
-    } else if (fresher) {
+    } else if (!liveIsFlowing) {
       const elapsed = (now - existing.targetAt) / 1000;
       if (elapsed > 0.05) {
         const measured = (racer.distance - existing.targetDistance) / elapsed;
@@ -259,13 +268,14 @@ export function applyLivePosition(
 ): boolean {
   const display = displays.get(message.u);
   if (!display) return false;
-  if (display.finished) return true;
+  if (display.finished || display.local) return true;
   // Ignore messages that arrive out of order.
   if (message.d < display.targetDistance - 50) return true;
   display.targetLane = message.l;
   display.targetDistance = message.d;
   display.speed = message.v;
   display.targetAt = now;
+  display.lastLiveAt = now;
   return true;
 }
 
@@ -275,10 +285,15 @@ export function stepRacerDisplays(
   now: number,
   dt: number,
 ): void {
-  const laneBlend = 1 - Math.exp(-14 * dt);
-  const distanceBlend = 1 - Math.exp(-10 * dt);
+  const laneBlend = 1 - Math.exp(-10 * dt);
+  const distanceBlend = 1 - Math.exp(-7 * dt);
   for (const display of displays.values()) {
-    const sinceUpdate = Math.min(MAX_EXTRAPOLATION_SECONDS, Math.max(0, (now - display.targetAt) / 1000));
+    if (display.local) continue;
+    const limit =
+      display.lastLiveAt > 0 && now - display.lastLiveAt < LIVE_FRESH_MS
+        ? LIVE_EXTRAPOLATION_SECONDS
+        : SAVED_EXTRAPOLATION_SECONDS;
+    const sinceUpdate = Math.min(limit, Math.max(0, (now - display.targetAt) / 1000));
     const predicted = display.targetDistance + display.speed * sinceUpdate;
     display.distance += (predicted - display.distance) * distanceBlend;
     display.laneRatio += (display.targetLane - display.laneRatio) * laneBlend;
