@@ -588,3 +588,12 @@ html, body { max-width: 100%; overflow-x: hidden; -webkit-text-size-adjust: 100%
 .career-locked { opacity: .55; }
 .career-btn { flex: none; width: auto; font-size: 1.1rem; padding: .55rem 1.1rem; }
 .net-debug { position: absolute; left: .5rem; bottom: .5rem; z-index: 50; margin: 0; padding: .4rem .6rem; font-size: .6rem; line-height: 1.4; color: #9dffb0; background: rgba(0, 0, 0, .72); border-radius: 6px; pointer-events: none; white-space: pre; }
+
+/* ===== Part 2: real vehicles in the garage ===== */
+.garage-stat-track { display: flex; }
+.garage-stat-fill-bonus { background: #3ddc84; border-radius: 0 5px 5px 0; }
+.garage-stat-bonus { color: #3ddc84; font-style: normal; font-size: .66rem; }
+.garage-real { margin: .1rem 0 .6rem; font-size: .7rem; letter-spacing: .04em; color: rgba(255, 255, 255, .75); }
+.garage-upgrades { display: grid; gap: .7rem; margin-top: 1.1rem; text-align: left; }
+.garage-upgrades > h3 { margin: 0; font-family: "Bebas Neue", sans-serif; font-size: 1.5rem; font-weight: 400; letter-spacing: .08em; }
+.garage-locked-note { margin-top: .9rem; text-align: center; }

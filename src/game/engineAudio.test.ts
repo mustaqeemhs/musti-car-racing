@@ -10,6 +10,7 @@ import {
 describe("engine audio", () => {
   it("gives each brand its own engine character", () => {
     expect(engineProfileFor({ id: "huracan-sto", name: "Lamborghini Huracán STO" }).id).toBe("lamborghini");
+    expect(engineProfileFor({ id: "musti-gt", name: "Musti GT" }).id).toBe("lamborghini");
     expect(engineProfileFor({ id: "f8", name: "Ferrari F8" }).id).toBe("ferrari");
     expect(engineProfileFor({ id: "765lt", name: "McLaren 765LT" }).id).toBe("mclaren");
     expect(engineProfileFor({ id: "amg", name: "Mercedes-AMG GT" }).id).toBe("mercedes");

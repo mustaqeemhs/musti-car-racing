@@ -50,9 +50,15 @@ Done (but verify on real devices):
 - [x] Portrait and landscape both allowed
 - [x] Brand-specific engine sounds, tyre squeal, turbo and exhaust pops (needs listening tests on iPhone and laptop)
 - [x] Career mode with AI racers
+- [x] **Part 2, cars and garage (done, needs a real-device check):** 7 real supercars and 3 real superbikes (pictures in `src/assets/vehicles/`), real names, prices graded by real top speed, one free car (Musti GT) and one free bike (Yamaha R1), stats panel (speed, acceleration, nitro, braking, grip) with real-life figures, upgrades under each owned vehicle (kept per vehicle, cost scales with the vehicle price), colour changes by recolouring the picture, exhaust flames and afterfire. Ownership is saved under `FLEET_KEY` (`musti-fleet-v2`).
+
+Next requests from the owner (do them in this order):
+- [ ] More career cups and harder, smarter AI as cups go up (more than three cups so it never gets boring).
+- [ ] Engine sound: each brand must sound like its real engine and build up naturally with speed (not just louder). Rework `engineAudio.ts`.
+- [ ] Move the wallet to the server (Supabase), including stake and pot payouts, prices and upgrade purchases. Then the browser can no longer edit it.
 
 Not done yet (in this order):
-- [ ] **Part 2, cars and garage:** replace the fake car art with the 7 supercar PNGs and 3 superbike PNGs the owner uploaded (top-down, transparent). Real names and a stable id for each. Add more cars/bikes. Colour change and upgrades must work on every one (recolour by hue shift, since the art is already coloured). Some unlocked at the start, others locked with Jaa'izah prices. Sounds already pick up the brand from the vehicle name.
+- [ ] More vehicles: the owner sends more top-down PNGs. To add one: save it as `src/assets/vehicles/<id>.webp` (nose up, transparent, about 640 px tall, cropped to the car), then add one `makeVehicle({...})` line in `src/game/carArt.ts` (real top speed, 0-100 time, hp, price, grip, brake, nitro). The price must follow the real speed (a test checks this).
 - [ ] **Part 3, highway:** roads that split into 2 or 3 branches with shortcuts (Asphalt style). Splits must be the same for all players in a room (deterministic from the room/race id).
 - [ ] Make sure 4 players stay smooth on phones (watch frame rate; the HUD re-renders about 10 times a second).
 - [ ] Optional: server-side wallet; background music; sound for other racers' engines.

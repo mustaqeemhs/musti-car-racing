@@ -54,25 +54,69 @@ export const PAINTS = [
   "#3b4f6b", "#d96f1e", "#7b4fd0", "#25b7c4", "#8a1538", "#5b6770",
 ];
 
-/** Playable vehicles. "musti-gt" is the hand-drawn player supercar artwork. */
+/**
+ * Real-life figures shown in the garage. They are approximate manufacturer claims
+ * (the "Musti GT" is the game's own car, so its figures are made up).
+ */
+export type VehicleReal = { topKmh: number; zeroTo100: number; hp: number };
+
+/** Playable vehicles. "musti-gt" is the game's own supercar artwork. */
 export type VehicleDef = {
-  id: string; name: string; model: VehicleModel | "musti"; cat: "car" | "bike";
+  id: string; name: string; brand: string; model: VehicleModel | "musti"; cat: "car" | "bike";
+  /** File name (without .webp) of the real picture in src/assets/vehicles. */
+  art?: string;
   blurb: string;
-  stats: { speed: number; accel: number; grip: number; brake: number }; // 0..100
-  maxMul: number; accelMul: number; gripMul: number; // gameplay multipliers
+  /** Jaa'izah price. 0 = unlocked from the start. */
+  price: number;
+  stats: { speed: number; accel: number; grip: number; brake: number; nitro: number }; // 0..100
+  real: VehicleReal;
+  maxMul: number; accelMul: number; gripMul: number; nitroMul: number; brakeMul: number; // gameplay multipliers
 };
+
+/** 0..100 from the real top speed: 280 km/h = 55 and 420 km/h = 100. */
+export const speedStat = (kmh: number) => Math.round(Math.max(20, Math.min(100, 55 + (kmh - 280) * 0.32)));
+/** 0..100 from the real 0 to 100 km/h time: 2.3 s = 100. */
+export const accelStat = (seconds: number) => Math.round(Math.max(20, Math.min(100, 100 - (seconds - 2.3) * 55)));
+const two = (value: number) => Math.round(value * 100) / 100;
+
+function makeVehicle(spec: {
+  id: string; name: string; brand: string; model: VehicleModel | "musti"; cat: "car" | "bike"; art?: string;
+  blurb: string; price: number; real: VehicleReal; grip: number; brake: number; nitro: number;
+}): VehicleDef {
+  const speed = speedStat(spec.real.topKmh);
+  const accel = accelStat(spec.real.zeroTo100);
+  const bike = spec.cat === "bike";
+  const def: VehicleDef = {
+    id: spec.id, name: spec.name, brand: spec.brand, model: spec.model, cat: spec.cat,
+    blurb: spec.blurb, price: spec.price, real: spec.real,
+    stats: { speed, accel, grip: spec.grip, brake: spec.brake, nitro: spec.nitro },
+    maxMul: two(1 + ((speed - 57) / 43) * 0.26),
+    accelMul: bike ? two(1.12 + (accel / 100) * 0.3) : two(0.9 + (accel / 100) * 0.33),
+    gripMul: bike ? two(0.85 + (spec.grip / 100) * 0.5) : two(0.76 + (spec.grip / 100) * 0.4),
+    nitroMul: two(0.8 + (spec.nitro / 100) * 0.4),
+    brakeMul: two(0.8 + (spec.brake / 100) * 0.4),
+  };
+  if (spec.art) def.art = spec.art;
+  return def;
+}
+
+/** Slowest and cheapest first. The price follows the real-life speed. */
 export const VEHICLE_DEFS: VehicleDef[] = [
-  { id: "musti-gt", name: "Musti GT", model: "musti", cat: "car", blurb: "Hand-drawn flagship supercar", stats: { speed: 92, accel: 82, grip: 62, brake: 62 }, maxMul: 1.08, accelMul: 1.0, gripMul: 1.0 },
-  { id: "vulcan-x", name: "Vulcan X", model: "super", cat: "car", blurb: "Track-bred hypercoupé", stats: { speed: 96, accel: 90, grip: 74, brake: 70 }, maxMul: 1.1, accelMul: 1.1, gripMul: 1.08 },
-  { id: "corsa-rs", name: "Corsa RS", model: "coupe", cat: "car", blurb: "Balanced street coupé", stats: { speed: 84, accel: 76, grip: 78, brake: 74 }, maxMul: 1.0, accelMul: 1.0, gripMul: 1.1 },
-  { id: "brute-502", name: "Brute 502", model: "muscle", cat: "car", blurb: "Old-school muscle", stats: { speed: 86, accel: 88, grip: 52, brake: 50 }, maxMul: 1.02, accelMul: 1.15, gripMul: 0.9 },
-  { id: "metro-dx", name: "Metro DX", model: "sedan", cat: "car", blurb: "Everyday hero", stats: { speed: 70, accel: 62, grip: 72, brake: 72 }, maxMul: 0.92, accelMul: 0.95, gripMul: 1.05 },
-  { id: "ridge-4x4", name: "Ridge 4x4", model: "suv", cat: "car", blurb: "Heavy but steady", stats: { speed: 72, accel: 60, grip: 64, brake: 66 }, maxMul: 0.94, accelMul: 0.9, gripMul: 1.0 },
-  { id: "swift-r", name: "Swift R", model: "sportbike", cat: "bike", blurb: "Full-fairing sportbike", stats: { speed: 94, accel: 96, grip: 88, brake: 80 }, maxMul: 1.06, accelMul: 1.35, gripMul: 1.25 },
-  { id: "street-atom", name: "Street Atom", model: "naked", cat: "bike", blurb: "Nimble naked bike", stats: { speed: 82, accel: 92, grip: 90, brake: 82 }, maxMul: 0.98, accelMul: 1.4, gripMul: 1.3 },
-  { id: "dune-hopper", name: "Dune Hopper", model: "dirtbike", cat: "bike", blurb: "Knobby tyres, big slides", stats: { speed: 76, accel: 90, grip: 94, brake: 76 }, maxMul: 0.94, accelMul: 1.35, gripMul: 1.35 },
-  { id: "longhaul-gt", name: "Longhaul GT", model: "tourer", cat: "bike", blurb: "Stable tourer with panniers", stats: { speed: 80, accel: 70, grip: 80, brake: 84 }, maxMul: 0.98, accelMul: 1.1, gripMul: 1.15 },
+  makeVehicle({ id: "musti-gt", name: "Musti GT", brand: "Musti", model: "musti", cat: "car", blurb: "The house supercar. Your starter.", price: 0, real: { topKmh: 285, zeroTo100: 3.4, hp: 520 }, grip: 62, brake: 62, nitro: 58 }),
+  makeVehicle({ id: "huracan-sto", name: "Lamborghini Huracán STO", brand: "Lamborghini", model: "super", cat: "car", art: "huracan-sto", blurb: "V10 track weapon with a racing wing", price: 1800, real: { topKmh: 310, zeroTo100: 3.0, hp: 640 }, grip: 88, brake: 86, nitro: 70 }),
+  makeVehicle({ id: "huracan-evo", name: "Lamborghini Huracán EVO", brand: "Lamborghini", model: "super", cat: "car", art: "huracan-evo", blurb: "Everyday V10 thunder", price: 2800, real: { topKmh: 325, zeroTo100: 2.9, hp: 640 }, grip: 82, brake: 80, nitro: 66 }),
+  makeVehicle({ id: "mclaren-765lt", name: "McLaren 765LT", brand: "McLaren", model: "super", cat: "car", art: "mclaren-765lt", blurb: "Longtail lightweight, pure speed", price: 4200, real: { topKmh: 330, zeroTo100: 2.8, hp: 755 }, grip: 90, brake: 90, nitro: 78 }),
+  makeVehicle({ id: "ferrari-f8", name: "Ferrari F8 Tributo", brand: "Ferrari", model: "super", cat: "car", art: "ferrari-f8", blurb: "Twin-turbo V8 legend", price: 5500, real: { topKmh: 340, zeroTo100: 2.9, hp: 710 }, grip: 84, brake: 84, nitro: 72 }),
+  makeVehicle({ id: "mclaren-720s", name: "McLaren 720S", brand: "McLaren", model: "super", cat: "car", art: "mclaren-720s", blurb: "Aero-sculpted supercar", price: 6200, real: { topKmh: 341, zeroTo100: 2.9, hp: 710 }, grip: 86, brake: 86, nitro: 74 }),
+  makeVehicle({ id: "amg-one", name: "Mercedes-AMG ONE", brand: "Mercedes-AMG", model: "super", cat: "car", art: "amg-one", blurb: "Formula 1 hybrid power for the road", price: 10000, real: { topKmh: 352, zeroTo100: 2.9, hp: 1063 }, grip: 92, brake: 92, nitro: 86 }),
+  makeVehicle({ id: "bugatti-chiron", name: "Bugatti Chiron", brand: "Bugatti", model: "super", cat: "car", art: "bugatti-chiron", blurb: "Quad-turbo W16, the speed king", price: 25000, real: { topKmh: 420, zeroTo100: 2.4, hp: 1479 }, grip: 78, brake: 90, nitro: 95 }),
+  makeVehicle({ id: "yamaha-r1", name: "Yamaha YZF-R1", brand: "Yamaha", model: "sportbike", cat: "bike", art: "yamaha-r1", blurb: "Crossplane screamer. Your starter bike.", price: 0, real: { topKmh: 299, zeroTo100: 3.1, hp: 200 }, grip: 90, brake: 84, nitro: 70 }),
+  makeVehicle({ id: "ducati-v4r", name: "Ducati Panigale V4 R", brand: "Ducati", model: "sportbike", cat: "bike", art: "ducati-v4r", blurb: "V4 racing icon with winglets", price: 3000, real: { topKmh: 299, zeroTo100: 2.8, hp: 234 }, grip: 92, brake: 90, nitro: 84 }),
+  makeVehicle({ id: "bmw-m1000rr", name: "BMW M 1000 RR", brand: "BMW", model: "sportbike", cat: "bike", art: "bmw-m1000rr", blurb: "Aero-winglet superbike", price: 4800, real: { topKmh: 306, zeroTo100: 3.1, hp: 212 }, grip: 91, brake: 88, nitro: 78 }),
 ];
+
+/** The vehicles every new player starts with: one car and one bike. */
+export const STARTER_VEHICLE_IDS = VEHICLE_DEFS.filter((vehicle) => vehicle.price === 0).map((vehicle) => vehicle.id);
 export const PLAYER_PAINTS = [
   { id: "#ffffff", name: "Arctic" }, { id: "#d62b2b", name: "Rosso" }, { id: "#2a6fe0", name: "Electric" },
   { id: "#2a2b30", name: "Carbon" }, { id: "#f0c419", name: "Giallo" }, { id: "#2f9a57", name: "Verde" },

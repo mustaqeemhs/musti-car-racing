@@ -48,20 +48,25 @@ import {
   playerBikeRenderSize,
   vehicleSprite,
   VEHICLE_DEFS,
+  STARTER_VEHICLE_IDS,
   type VehicleDef,
 } from "./carArt";
 
+import { WALLET_KEY, readWalletBalance } from "./garageData";
 import {
-  WALLET_KEY,
-  VEHICLE_PRICES,
-  readOwnedVehicles,
-  readWalletBalance,
-  readVehicleUpgrades,
-  purchaseVehicleUpgrade,
-  saveOwnedVehicles,
-  readSelectedVehicle,
-  saveSelectedVehicle,
-} from "./garageData";
+  FLEET_KEY,
+  buyUpgrade as applyUpgrade,
+  buyVehicle,
+  levelsFor,
+  parseFleet,
+  scaledUpgradeCost,
+  selectVehicle,
+  starterFleet,
+  statBonus,
+  type FleetState,
+} from "./fleet";
+import { artSprite, onVehicleArtLoaded, preloadVehicleArt } from "./vehicleArt";
+import { drawExhaustFlames, flameIntensity } from "./exhaust";
 import {
   ACHIEVEMENTS,
   EMPTY_PROGRESSION,
@@ -239,6 +244,49 @@ function adjustWallet(delta: number): number | null {
   }
 }
 
+type DrawnSize = { width: number; height: number; kind: "car" | "bike" };
+
+/**
+ * Draws a vehicle centred on (0, 0): the real picture when it is ready, otherwise the
+ * drawn fallback. Returns the size it was drawn at (null if nothing could be drawn).
+ */
+function drawVehicleAt(
+  c: CanvasRenderingContext2D,
+  def: VehicleDef | undefined,
+  paint: string,
+  pw: number,
+  ph: number,
+  mustiSprite: HTMLCanvasElement | HTMLImageElement | null,
+): DrawnSize | null {
+  const kind = def?.cat === "bike" ? "bike" : "car";
+  if (def?.art) {
+    const art = artSprite(def.art, paint, ph);
+    if (art) {
+      const height = ph;
+      const width = Math.min(height * art.aspect, pw * 1.5);
+      c.drawImage(art.canvas, -width / 2, -height / 2, width, height);
+      return { width, height, kind };
+    }
+  }
+  if (def && def.model !== "musti") {
+    const sprite = vehicleSprite(def.model, paint, pw, ph);
+    if (kind === "bike") {
+      const size = playerBikeRenderSize(pw, ph);
+      drawBikeSprite(c, sprite as HTMLCanvasElement, pw, ph, -size.width / 2, -size.height / 2, size.width, size.height);
+      return { width: size.width, height: size.height, kind };
+    }
+    const carWidth = pw * 1.08;
+    c.drawImage(sprite, -carWidth / 2, -ph / 2, carWidth, ph);
+    return { width: carWidth, height: ph, kind };
+  }
+  if (mustiSprite) {
+    const carWidth = pw * 1.08;
+    c.drawImage(mustiSprite, -carWidth / 2, -ph / 2, carWidth, ph);
+    return { width: carWidth, height: ph, kind };
+  }
+  return null;
+}
+
 const SEAT_COLORS = ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b"];
 const remotePlayerSprites = new Map<string, HTMLCanvasElement | HTMLImageElement>();
 
@@ -334,16 +382,14 @@ export function SketchRun() {
   progression: ProgressionData;
   saveError: string;
 } | null>(null);
-  const [ownedVehicles, setOwnedVehicles] = useState<string[]>(["musti-gt"]);
+  const [fleet, setFleetState] = useState<FleetState>(() => starterFleet(STARTER_VEHICLE_IDS));
+  const ownedVehicles = fleet.owned;
+  const [artTick, setArtTick] = useState(0);
 const [selectedVehicle, setSelectedVehicleState] = useState("musti-gt");
 const [garageBalance, setGarageBalance] = useState<number | null>(null);
 const [garageMessage, setGarageMessage] = useState("");
 const [garageIndex, setGarageIndex] = useState(0);
 const [walletError, setWalletError] = useState("");
-const [upgradeVehicleId, setUpgradeVehicleId] = useState("musti-gt");
-const [upgradeLevels, setUpgradeLevels] = useState<VehicleUpgradeLevels>({
-  ...EMPTY_UPGRADE_LEVELS,
-});
 const [upgradeMessage, setUpgradeMessage] = useState("");
 const [multiplayerRace, setMultiplayerRace] = useState<MultiplayerRaceStart | null>(null);
 const multiplayerRaceRef = useRef<MultiplayerRaceStart | null>(null);
@@ -382,7 +428,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [] as AchievementId[],
     lives: MAX_LIVES, invuln: 0, boost: 1, boosting: false, boostVis: 0, shake: 0, hitFlash: 0,
     drift: 0, traction: 1, driftCd: 0, driftDir: 0,
-    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[],
+    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[], afterfire: 0, prevBoosting: false, brakeMul: 1,
     spawnT: 0, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 6, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, propT: 0, heat: 0, bonus: 0, walletSaveFailed: false,
   });
 
@@ -396,107 +442,99 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     });
   }, []);
 
+  const vehicleIds = VEHICLE_DEFS.map((vehicle) => vehicle.id);
+  const loadFleet = () => parseFleet(localStorage.getItem(FLEET_KEY), vehicleIds, STARTER_VEHICLE_IDS);
+  const storeFleet = (next: FleetState) => localStorage.setItem(FLEET_KEY, JSON.stringify(next));
+
   const purchaseOrSelectVehicle = (vehicleId: string) => {
     const vehicle = VEHICLE_DEFS.find((item) => item.id === vehicleId);
     if (!vehicle) return;
-
-    const owned = readOwnedVehicles();
-
-    // Already owned: select it without charging the player.
-    if (owned.includes(vehicleId)) {
-      saveSelectedVehicle(vehicleId);
-      setSelectedVehicleState(vehicleId);
-      selectedVehicleRef.current = vehicleId;
-      setGarageMessage(`${vehicle.name} selected!`);
-      return;
-    }
-
     try {
-      const rawProfile = localStorage.getItem(WALLET_KEY);
-      const profile = rawProfile ? JSON.parse(rawProfile) : null;
+      const current = loadFleet();
 
-      if (
-        !profile ||
-        typeof profile.balance !== "number" ||
-        !Number.isFinite(profile.balance)
-      ) {
+      // Already owned: select it without charging the player.
+      if (current.owned.includes(vehicleId)) {
+        const next = selectVehicle(current, vehicleId);
+        if (!next) return;
+        storeFleet(next);
+        setFleetState(next);
+        setSelectedVehicleState(vehicleId);
+        selectedVehicleRef.current = vehicleId;
+        setGarageMessage(`${vehicle.name} selected!`);
+        return;
+      }
+
+      const balance = readWalletBalance();
+      if (balance === null) {
         setGarageMessage("Create your guest profile before buying vehicles.");
         return;
       }
-
-      const price = VEHICLE_PRICES[vehicleId] ?? 0;
-
-      if (profile.balance < price) {
-        setGarageBalance(profile.balance);
+      const result = buyVehicle(current, vehicle, balance);
+      if (!result.ok) {
+        setGarageBalance(balance);
         setGarageMessage(
-          `Not enough Jaa'izah. You need ${(price - profile.balance).toLocaleString()} more.`
+          result.reason === "funds"
+            ? `Not enough Jaa'izah. You need ${(result.missing ?? 0).toLocaleString()} more.`
+            : "That vehicle cannot be bought.",
         );
         return;
       }
-
-      const updatedProfile = {
-        ...profile,
-        balance: profile.balance - price,
-      };
-
-      localStorage.setItem(WALLET_KEY, JSON.stringify(updatedProfile));
-
-      const updatedOwned = [...owned, vehicleId];
-      saveOwnedVehicles(updatedOwned);
-      saveSelectedVehicle(vehicleId);
-
-      setOwnedVehicles(updatedOwned);
+      const newBalance = adjustWallet(-vehicle.price);
+      if (newBalance === null) {
+        setGarageMessage("Purchase failed. Check your saved wallet and try again.");
+        return;
+      }
+      storeFleet(result.state);
+      setFleetState(result.state);
       setSelectedVehicleState(vehicleId);
       selectedVehicleRef.current = vehicleId;
-      setGarageBalance(updatedProfile.balance);
+      setGarageBalance(newBalance);
       setGarageMessage(`${vehicle.name} purchased and selected!`);
     } catch {
       setGarageMessage("Purchase failed. Please try again.");
     }
   };
 
-  const chooseUpgradeVehicle = (vehicleId: string) => {
-    if (!ownedVehicles.includes(vehicleId)) {
-      setUpgradeMessage("Only vehicles you own can be upgraded.");
-      return;
-    }
-    setUpgradeVehicleId(vehicleId);
-    setUpgradeLevels(readVehicleUpgrades(vehicleId));
-    setUpgradeMessage("");
-  };
-
-  const buyUpgrade = (category: UpgradeCategory) => {
-    const currentLevel = upgradeLevels[category];
+  const buyUpgrade = (vehicleId: string, category: UpgradeCategory) => {
+    const vehicle = VEHICLE_DEFS.find((item) => item.id === vehicleId);
+    if (!vehicle) return;
     try {
-      const result = purchaseVehicleUpgrade(
-        upgradeVehicleId,
-        category,
-        currentLevel,
-      );
-      setGarageBalance(result.balance);
+      const current = loadFleet();
+      const level = levelsFor(current, vehicleId)[category] ?? 0;
+      const cost = scaledUpgradeCost(nextUpgradeCost(category, level), vehicle.price);
+      const balance = readWalletBalance();
+      if (balance === null) {
+        setUpgradeMessage("Create a guest profile before purchasing upgrades.");
+        return;
+      }
+      const result = applyUpgrade(current, vehicleId, category, cost, balance, MAX_UPGRADE_LEVEL);
       if (result.status === "purchased") {
-        setUpgradeLevels(result.levels);
+        const newBalance = adjustWallet(-(cost ?? 0));
+        storeFleet(result.state);
+        setFleetState(result.state);
+        setGarageBalance(newBalance ?? result.balance);
         setUpgradeMessage(
-          `${UPGRADE_DEFINITIONS[category].title} upgraded to level ${result.levels[category]}.`,
+          `${vehicle.name}: ${UPGRADE_DEFINITIONS[category].title} upgraded to level ${result.level}.`,
         );
       } else if (result.status === "insufficient-funds") {
+        setGarageBalance(balance);
         setUpgradeMessage("Not enough Jaa'izah for that upgrade.");
       } else if (result.status === "max-level") {
-        setUpgradeLevels(result.levels);
         setUpgradeMessage(`${UPGRADE_DEFINITIONS[category].title} is already maxed.`);
-      } else if (result.status === "stale-level") {
-        setUpgradeLevels(result.levels);
-        setUpgradeMessage("Upgrade details refreshed. Please review the new price.");
-      } else if (result.status === "not-owned") {
-        setUpgradeMessage("Only vehicles you own can be upgraded.");
       } else {
-        setUpgradeMessage("Create a guest profile before purchasing upgrades.");
+        setUpgradeMessage("Buy this vehicle first to upgrade it.");
       }
     } catch (error) {
       console.error("Could not purchase vehicle upgrade.", error);
       setUpgradeMessage("Upgrade purchase failed. Check your saved wallet and try again.");
     }
   };
+
+  // Real vehicle pictures load in the background; redraw the garage when one arrives.
+  useEffect(() => {
+    preloadVehicleArt(VEHICLE_DEFS.flatMap((vehicle) => (vehicle.art ? [vehicle.art] : [])));
+    return onVehicleArtLoaded(() => setArtTick((tick) => tick + 1));
+  }, []);
 
   useEffect(() => {
     const legacyBest = Number(
@@ -518,13 +556,10 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     try { setBoard(JSON.parse(localStorage.getItem(BOARD_KEY) || "[]")); } catch { /* ignore */ }
     setProgression(savedProgression);
     try {
-  const owned = readOwnedVehicles();
-  const selectedId = readSelectedVehicle();
-  setOwnedVehicles(owned);
-  setSelectedVehicleState(selectedId);
-  selectedVehicleRef.current = selectedId;
-  setUpgradeVehicleId(selectedId);
-  setUpgradeLevels(readVehicleUpgrades(selectedId));
+  const loadedFleet = parseFleet(localStorage.getItem(FLEET_KEY), VEHICLE_DEFS.map((vehicle) => vehicle.id), STARTER_VEHICLE_IDS);
+  setFleetState(loadedFleet);
+  setSelectedVehicleState(loadedFleet.selected);
+  selectedVehicleRef.current = loadedFleet.selected;
 
   setGarageBalance(readWalletBalance());
 } catch {
@@ -569,7 +604,8 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
 
   const reset = useCallback(() => {
     const W = world.current;
-    const upgradeLevels = readVehicleUpgrades(selectedVehicleRef.current);
+    const savedFleet = parseFleet(localStorage.getItem(FLEET_KEY), VEHICLE_DEFS.map((vehicle) => vehicle.id), STARTER_VEHICLE_IDS);
+    const upgradeLevels = { ...EMPTY_UPGRADE_LEVELS, ...levelsFor(savedFleet, selectedVehicleRef.current) } as VehicleUpgradeLevels;
     const vehicleDef = VEHICLE_DEFS.find(
       (vehicle) => vehicle.id === selectedVehicleRef.current,
     );
@@ -581,7 +617,11 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       },
       upgradeLevels,
     );
-    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[], spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
+    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[], afterfire: 0, prevBoosting: false, brakeMul: 1, spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
+    const nitroCapacity = W.vehiclePerformance.nitroCapacity * (vehicleDef?.nitroMul ?? 1);
+    W.boostCapacity = nitroCapacity;
+    W.boost = nitroCapacity;
+    W.brakeMul = (vehicleDef?.brakeMul ?? 1) * (1 + 0.6 * (W.vehiclePerformance.handlingMultiplier / (vehicleDef?.gripMul ?? 1) - 1));
     setWalletError("");
     setProgressionError("");
     setFinal(null);
@@ -1325,10 +1365,18 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       }
 
       if (inp.down) {
-        target = W.cruise * 0.4;
+        target = W.cruise * (0.4 / Math.max(0.6, W.brakeMul));
       }
 
       W.boosting = inp.boost && W.boost > 0.02 && !inp.down;
+
+      // exhaust afterfire: a pop when nitro ends, when braking hard, and now and then at full chat
+      if (W.prevBoosting && !W.boosting) W.afterfire = 1;
+      W.prevBoosting = W.boosting;
+      const pushRatio = W.speed / Math.max(1, vehicleMaxSpeed);
+      if (inp.down && pushRatio > 0.5 && Math.random() < dt * 8) W.afterfire = Math.max(W.afterfire, 0.85);
+      if (!inp.up && !W.boosting && pushRatio > 0.7 && Math.random() < dt * 1.5) W.afterfire = Math.max(W.afterfire, 0.6);
+      W.afterfire = Math.max(0, W.afterfire - dt * 4.5);
 
       if (W.boosting) {
         target = Math.min(
@@ -1347,7 +1395,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
         target > W.speed
           ? accelRate(W.speed, W.boosting, vehicleMaxSpeed) * accelMul
           : inp.down
-            ? 3.2 * gripMul
+            ? 3.2 * gripMul * Math.max(0.6, W.brakeMul)
             : 0.9;
 
       W.speed +=
@@ -1404,7 +1452,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
           if (view) {
             view.distance = ai.distance; view.targetDistance = ai.distance;
             view.laneRatio = ai.lane; view.targetLane = ai.lane;
-            view.finished = ai.finishedAt !== null; view.speed = 0; view.targetAt = aiNow;
+            view.finished = ai.finishedAt !== null; view.speed = ai.speed; view.targetAt = aiNow;
           }
         }
       }
@@ -2155,27 +2203,28 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
           }
           const def: VehicleDef | undefined = VEHICLE_DEFS.find((vehicle) => vehicle.id === racer.vehicleId) ?? VEHICLE_DEFS[0];
           const paintColor = racer.paint ?? "#ffffff";
-          let sprite: HTMLCanvasElement | HTMLImageElement | null = null;
-          const racerModel = def?.model;
-          if (racerModel === "musti") {
-            sprite = remotePlayerSprites.get(paintColor) ?? null;
-            if (!sprite && playerImg.current) {
-              sprite = tintPlayer(playerImg.current, paintColor);
-              remotePlayerSprites.set(paintColor, sprite);
+          let mustiSprite: HTMLCanvasElement | HTMLImageElement | null = null;
+          if (def?.model === "musti") {
+            mustiSprite = remotePlayerSprites.get(paintColor) ?? null;
+            if (!mustiSprite && playerImg.current) {
+              mustiSprite = tintPlayer(playerImg.current, paintColor);
+              remotePlayerSprites.set(paintColor, mustiSprite);
             }
-          } else if (racerModel) {
-            sprite = vehicleSprite(racerModel, paintColor, W.pw, W.ph);
           }
           c.save();
           c.translate(racerX, racerY);
-          if (sprite) {
-            if (def?.cat === "bike") {
-              const size = playerBikeRenderSize(W.pw, W.ph);
-              drawBikeSprite(c, sprite as HTMLCanvasElement, W.pw, W.ph, -size.width / 2, -size.height / 2, size.width, size.height);
-            } else {
-              const carWidth = W.pw * 1.08;
-              c.drawImage(sprite, -carWidth / 2, -W.ph / 2, carWidth, W.ph);
-            }
+          const drawnRacer = drawVehicleAt(c, def, paintColor, W.pw, W.ph, mustiSprite);
+          if (drawnRacer) {
+            drawExhaustFlames(c, {
+              kind: drawnRacer.kind,
+              width: drawnRacer.width,
+              height: drawnRacer.height,
+              intensity: flameIntensity(Math.min(1, racer.speed / 1100), false),
+              boosting: false,
+              pop: 0,
+              time: nowMs / 1000,
+              seed: racer.seat + 1,
+            });
           } else {
             c.fillStyle = color;
             c.fillRect(-W.pw / 2, -W.ph / 2, W.pw, W.ph);
@@ -2213,40 +2262,21 @@ if (!selectedVehicleIsBike) {
 }
         if (W.boosting) { c.shadowColor = "#4cc3ff"; c.shadowBlur = 30; }
 
-const selectedDef = VEHICLE_DEFS.find(
-  (vehicle) => vehicle.id === selectedVehicleRef.current
-);
-const spr =
-  selectedDef && selectedDef.model !== "musti"
-    ? vehicleSprite(
-        selectedDef.model,
-        settingsRef.current.paint,
-        W.pw,
-        W.ph
-      )
-    : playerSprite.current;
-
-
-if (spr) {
-  if (selectedDef?.cat === "bike") {
-    const size = playerBikeRenderSize(W.pw, W.ph);
-    drawBikeSprite(
-      c,
-      spr as HTMLCanvasElement,
-      W.pw,
-      W.ph,
-      -size.width / 2,
-      -size.height / 2,
-      size.width,
-      size.height,
-    );
-  } else {
-    const carWidth = W.pw * 1.08;
-    c.drawImage(spr, -carWidth / 2, -W.ph / 2, carWidth, W.ph);
-  }
-}
-
-        else { c.fillStyle = "#eee"; c.fillRect(-W.pw / 2, -W.ph / 2, W.pw, W.ph); }
+const selectedDef = VEHICLE_DEFS.find((vehicle) => vehicle.id === selectedVehicleRef.current);
+const drawnSize = drawVehicleAt(c, selectedDef, settingsRef.current.paint, W.pw, W.ph, playerSprite.current);
+if (drawnSize) {
+  c.shadowBlur = 0;
+  drawExhaustFlames(c, {
+    kind: drawnSize.kind,
+    width: drawnSize.width,
+    height: drawnSize.height,
+    intensity: flameIntensity(W.speed / Math.max(1, W.vehiclePerformance.maxSpeed), W.boosting),
+    boosting: W.boosting,
+    pop: W.afterfire,
+    time: t,
+    seed: 0,
+  });
+} else { c.fillStyle = "#eee"; c.fillRect(-W.pw / 2, -W.ph / 2, W.pw, W.ph); }
         c.restore();
       }
       // popups
@@ -2541,68 +2571,63 @@ if (spr) {
     const vehicleModel = vehicle.model;
     const owned = ownedVehicles.includes(vehicle.id);
     const selected = selectedVehicle === vehicle.id;
-    const price = VEHICLE_PRICES[vehicle.id] ?? 0;
+    const price = vehicle.price;
+
+    // stats including the upgrades bought for this vehicle
+    const levels = levelsFor(fleet, vehicle.id);
+    const multipliers = {
+      maxSpeedMultiplier: vehicle.maxMul,
+      accelerationMultiplier: vehicle.accelMul,
+      handlingMultiplier: vehicle.gripMul,
+    };
+    const basePerformance = getVehiclePerformance(multipliers, { ...EMPTY_UPGRADE_LEVELS });
+    const nowPerformance = getVehiclePerformance(multipliers, { ...EMPTY_UPGRADE_LEVELS, ...levels } as VehicleUpgradeLevels);
+    const handlingRatio = nowPerformance.handlingMultiplier / basePerformance.handlingMultiplier;
+    const bonus = {
+      speed: statBonus(vehicle.stats.speed, nowPerformance.maxSpeed / basePerformance.maxSpeed),
+      accel: statBonus(vehicle.stats.accel, nowPerformance.accelerationMultiplier / basePerformance.accelerationMultiplier),
+      nitro: statBonus(vehicle.stats.nitro, nowPerformance.nitroCapacity / basePerformance.nitroCapacity),
+      brake: Math.round(statBonus(vehicle.stats.brake, handlingRatio) * 0.6),
+      grip: statBonus(vehicle.stats.grip, handlingRatio),
+    };
+    const statRows: [string, number, number][] = [
+      ["TOP SPEED", vehicle.stats.speed, bonus.speed],
+      ["ACCELERATION", vehicle.stats.accel, bonus.accel],
+      ["NITRO", vehicle.stats.nitro, bonus.nitro],
+      ["BRAKING", vehicle.stats.brake, bonus.brake],
+      ["GRIP", vehicle.stats.grip, bonus.grip],
+    ];
 
     return (
       <div className="garage-feature">
         <div className="garage-stage">
-          {vehicleModel === "musti" ? (
+          {vehicle.art ? (
+            <canvas
+              className="garage-feature-canvas"
+              width={300}
+              height={300}
+              data-art-tick={artTick}
+              ref={(node) => {
+                if (!node || !vehicle.art) return;
+                const ctx = node.getContext("2d");
+                if (!ctx) return;
+                ctx.clearRect(0, 0, node.width, node.height);
+                const sprite = artSprite(vehicle.art, settings.paint, 270);
+                if (!sprite) return;
+                const drawHeight = Math.min(node.height - 16, 270);
+                const drawWidth = drawHeight * sprite.aspect;
+                ctx.drawImage(sprite.canvas, (node.width - drawWidth) / 2, (node.height - drawHeight) / 2, drawWidth, drawHeight);
+              }}
+              aria-label={`${vehicle.name} vehicle preview`}
+            />
+          ) : vehicleModel === "musti" ? (
             <img
               className="garage-feature-image"
               src={playerImgSrc}
               alt={vehicle.name}
               style={{ filter: `drop-shadow(0 0 24px ${settings.paint})` }}
             />
-          ) : (
-            <canvas
-              className="garage-feature-canvas"
-              ref={(node) => {
-                if (!node) return;
-                const ctx = node.getContext("2d");
-                if (!ctx) return;
-                ctx.clearRect(0, 0, node.width, node.height);
-                const sprite = vehicleSprite(
-                  vehicleModel,
-                  settings.paint,
-                  105,
-                  180,
-                );
-                if (vehicle.cat === "bike") {
-                  const previewWidth = 126;
-                  const previewHeight = 216;
-                  const position = centeredBikePreviewPosition(
-                    node.width,
-                    node.height,
-                    previewWidth,
-                    previewHeight,
-                  );
-                  drawBikeSprite(
-                    ctx,
-                    sprite,
-                    105,
-                    180,
-                    position.x,
-                    position.y,
-                    previewWidth,
-                    previewHeight,
-                  );
-                } else {
-                  const previewWidth = sprite.width / 2;
-                  const previewHeight = sprite.height / 2;
-                  ctx.drawImage(
-                    sprite,
-                    (node.width - previewWidth) / 2,
-                    (node.height - previewHeight) / 2,
-                    previewWidth,
-                    previewHeight,
-                  );
-                }
-              }}
-              width={300}
-              height={260}
-              aria-label={`${vehicle.name} vehicle preview`}
-            />
-          )}
+          ) : null}
 
           <span className="garage-stage-number">
             {String(garageIndex + 1).padStart(2, "0")} / {VEHICLE_DEFS.length}
@@ -2610,29 +2635,30 @@ if (spr) {
         </div>
 
         <p className="garage-vehicle-type">
-          {vehicle.cat === "bike" ? "MOTORCYCLE" : "PERFORMANCE CAR"}
+          {vehicle.brand.toUpperCase()} · {vehicle.cat === "bike" ? "MOTORCYCLE" : "PERFORMANCE CAR"}
         </p>
 
         <h2 className="garage-feature-name">{vehicle.name}</h2>
         <p className="garage-feature-description">{vehicle.blurb}</p>
+        <p className="garage-real">
+          {vehicle.real.topKmh} km/h top speed · 0 to 100 km/h in {vehicle.real.zeroTo100.toFixed(1)} s · {vehicle.real.hp.toLocaleString()} hp
+        </p>
 
         <div className="garage-performance">
-          {[
-            ["TOP SPEED", vehicle.stats.speed],
-            ["ACCELERATION", vehicle.stats.accel],
-            ["GRIP", vehicle.stats.grip],
-            ["BRAKING", vehicle.stats.brake],
-          ].map(([label, value]) => (
+          {statRows.map(([label, value, extra]) => (
             <div className="garage-stat" key={label}>
               <div className="garage-stat-heading">
                 <span>{label}</span>
-                <strong>{value}</strong>
+                <strong>
+                  {value}
+                  {extra > 0 && <em className="garage-stat-bonus"> +{extra}</em>}
+                </strong>
               </div>
               <div className="garage-stat-track">
-                <div
-                  className="garage-stat-fill"
-                  style={{ width: `${value}%` }}
-                />
+                <div className="garage-stat-fill" style={{ width: `${Math.min(100, value)}%` }} />
+                {extra > 0 && (
+                  <div className="garage-stat-fill garage-stat-fill-bonus" style={{ left: `${Math.min(100, value)}%`, width: `${Math.min(100 - Math.min(100, value), extra)}%` }} />
+                )}
               </div>
             </div>
           ))}
@@ -2642,7 +2668,7 @@ if (spr) {
           <div className="garage-feature-price">
             <span>{owned ? "OWNED VEHICLE" : "UNLOCK PRICE"}</span>
             <strong>
-              {owned ? "UNLOCKED" : `${price.toLocaleString()} Jaa'izah`}
+              {owned ? "UNLOCKED" : price === 0 ? "FREE" : `${price.toLocaleString()} Jaa'izah`}
             </strong>
           </div>
 
@@ -2656,18 +2682,63 @@ if (spr) {
                 ? "SELECT VEHICLE"
                 : "BUY VEHICLE"}
           </button>
-          {owned && (
-            <button
-              className="btn-secondary"
-              onClick={() => {
-                chooseUpgradeVehicle(vehicle.id);
-                setScreen("upgrades");
-              }}
-            >
-              TUNE THIS VEHICLE
-            </button>
-          )}
         </div>
+
+        {owned ? (
+          <section className="garage-upgrades" aria-label={`${vehicle.name} upgrades`}>
+            <h3>Upgrades for the {vehicle.name}</h3>
+            <p className="note">Pay to make it faster and better. Upgrades are kept separately for each vehicle and work the next time you race.</p>
+            {upgradeMessage && <p className="garage-message" role="status">{upgradeMessage}</p>}
+            <div className="upgrade-list">
+              {UPGRADE_CATEGORIES.map((category) => {
+                const definition = UPGRADE_DEFINITIONS[category];
+                const level = levels[category] ?? 0;
+                const cost = scaledUpgradeCost(nextUpgradeCost(category, level), vehicle.price);
+                const affordable = cost !== null && garageBalance !== null && garageBalance >= cost;
+                return (
+                  <article className="upgrade-card" key={category}>
+                    <div className="upgrade-card-heading">
+                      <div>
+                        <h3>{definition.title}</h3>
+                        <p>Level {level} / {MAX_UPGRADE_LEVEL}</p>
+                      </div>
+                      <div className="upgrade-level-pips" aria-label={`Upgrade level ${level} of ${MAX_UPGRADE_LEVEL}`}>
+                        {Array.from({ length: MAX_UPGRADE_LEVEL }, (_, index) => (
+                          <span key={index} className={index < level ? "upgrade-pip upgrade-pip-on" : "upgrade-pip"} />
+                        ))}
+                      </div>
+                    </div>
+                    {cost === null ? (
+                      <>
+                        <p className="upgrade-benefit">Maximum level reached</p>
+                        <button className="upgrade-buy" disabled>MAX LEVEL</button>
+                      </>
+                    ) : (
+                      <>
+                        <p className="upgrade-benefit">
+                          Next: Level {level + 1} · {upgradeBenefit(category, level + 1)}
+                        </p>
+                        <button
+                          className={`upgrade-buy ${affordable ? "upgrade-buy-affordable" : "upgrade-buy-unaffordable"}`}
+                          disabled={!affordable}
+                          onClick={() => buyUpgrade(vehicle.id, category)}
+                        >
+                          {garageBalance === null
+                            ? `${cost.toLocaleString()} Jaa'izah`
+                            : affordable
+                              ? `BUY · ${cost.toLocaleString()} Jaa'izah`
+                              : `NEED ${(cost - garageBalance).toLocaleString()} MORE`}
+                        </button>
+                      </>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        ) : (
+          <p className="note garage-locked-note">Buy this vehicle to unlock its upgrades.</p>
+        )}
       </div>
     );
   })()}
@@ -2725,94 +2796,6 @@ if (spr) {
     <button className="cta" onClick={() => setScreen("home")}>
       BACK TO HOME
     </button>
-  </div>
-)}
-
-{screenName === "upgrades" && (
-  <div className="menu-card upgrades-screen">
-    <p className="kicker">Workshop</p>
-    <h2 className="screen-title">VEHICLE UPGRADES</h2>
-    <p className="note">
-      Every ride starts stock at level 0. Tune owned vehicles independently; changes take effect the next time you race in that vehicle.
-    </p>
-    <div className="garage-wallet">
-      <span>YOUR BALANCE</span>
-      <strong>
-        {garageBalance === null
-          ? "Guest profile required"
-          : `${garageBalance.toLocaleString()} Jaa'izah`}
-      </strong>
-    </div>
-    <label className="field">
-      Owned vehicle
-      <select
-        className="upgrade-vehicle-select"
-        value={upgradeVehicleId}
-        onChange={(event) => chooseUpgradeVehicle(event.target.value)}
-      >
-        {ownedVehicles.map((vehicleId) => {
-          const vehicle = VEHICLE_DEFS.find((item) => item.id === vehicleId);
-          return vehicle ? (
-            <option key={vehicleId} value={vehicleId}>
-              {vehicle.name}{selectedVehicle === vehicleId ? " · Current ride" : ""}
-            </option>
-          ) : null;
-        })}
-      </select>
-    </label>
-    {upgradeMessage && (
-      <p className="garage-message" role="status">{upgradeMessage}</p>
-    )}
-    <div className="upgrade-list">
-      {UPGRADE_CATEGORIES.map((category) => {
-        const definition = UPGRADE_DEFINITIONS[category];
-        const level = upgradeLevels[category];
-        const cost = nextUpgradeCost(category, level);
-        const affordable = cost !== null && garageBalance !== null && garageBalance >= cost;
-        return (
-          <article className="upgrade-card" key={category}>
-            <div className="upgrade-card-heading">
-              <div>
-                <h3>{definition.title}</h3>
-                <p>Level {level} / {MAX_UPGRADE_LEVEL}</p>
-              </div>
-              <div className="upgrade-level-pips" aria-label={`Upgrade level ${level} of ${MAX_UPGRADE_LEVEL}`}>
-                {Array.from({ length: MAX_UPGRADE_LEVEL }, (_, index) => (
-                  <span key={index} className={index < level ? "upgrade-pip upgrade-pip-on" : "upgrade-pip"} />
-                ))}
-              </div>
-            </div>
-            {cost === null ? (
-              <>
-                <p className="upgrade-benefit">Maximum level reached</p>
-                <button className="upgrade-buy" disabled>MAX LEVEL</button>
-              </>
-            ) : (
-              <>
-                <p className="upgrade-benefit">
-                  Next: Level {level + 1} · {upgradeBenefit(category, level + 1)}
-                </p>
-                <button
-                  className={`upgrade-buy ${affordable ? "upgrade-buy-affordable" : "upgrade-buy-unaffordable"}`}
-                  disabled={!affordable}
-                  onClick={() => buyUpgrade(category)}
-                >
-                  {garageBalance === null
-                    ? `${cost.toLocaleString()} Jaa'izah`
-                    : affordable
-                      ? `BUY · ${cost.toLocaleString()} Jaa'izah`
-                      : `NEED ${(cost - garageBalance).toLocaleString()} MORE`}
-                </button>
-              </>
-            )}
-          </article>
-        );
-      })}
-    </div>
-    <div className="upgrade-actions">
-      <button className="btn-secondary" onClick={() => setScreen("garage")}>BACK TO GARAGE</button>
-      <button className="cta" onClick={() => setScreen("home")}>BACK TO HOME</button>
-    </div>
   </div>
 )}
 

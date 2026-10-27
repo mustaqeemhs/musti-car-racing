@@ -53,7 +53,7 @@ export function engineProfileFor(vehicle: VehicleLike | undefined): EngineProfil
   if (!vehicle) return ENGINE_PROFILES["generic"]!;
   const text = `${vehicle.id} ${vehicle.name ?? ""} ${vehicle.model ?? ""}`.toLowerCase();
   const rules: [RegExp, string][] = [
-    [/lambo|huracan|huracán|aventador|\bsto\b|urus/, "lamborghini"],
+    [/lambo|huracan|huracán|aventador|\bsto\b|urus|\bmusti\b/, "lamborghini"],
     [/ferrari|\bf8\b|296|sf90|488|roma/, "ferrari"],
     [/mclaren|765|720s|750s|artura/, "mclaren"],
     [/mercedes|\bamg\b/, "mercedes"],
