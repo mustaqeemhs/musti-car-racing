@@ -49,11 +49,10 @@ Done (but verify on real devices):
 - [x] Crash slows only; car-to-car bumping; no freeze on online pause
 - [x] Portrait and landscape both allowed
 - [x] Brand-specific engine sounds, tyre squeal, turbo and exhaust pops (needs listening tests on iPhone and laptop)
-- [x] Career mode with AI racers
+- [x] Career mode with AI racers: 8 cups (Rookie, Street, Pro, Night Sprint, Elite, Endurance, Legend, World Championship). Each cup has its own pace, race length, prizes, mistake rate, rubber-band help, aggression (overtaking/blocking), nitro skill and which cars the rivals drive (see `CAREER_TIERS` in `career.ts`). Rivals drive relative to a fixed reference Musti GT, not to the player's own car, so a faster vehicle or upgrades really help. Pace above 1.35 means the player needs nitro and a good vehicle.
 - [x] **Part 2, cars and garage (done, needs a real-device check):** 7 real supercars and 3 real superbikes (pictures in `src/assets/vehicles/`), real names, prices graded by real top speed, one free car (Musti GT) and one free bike (Yamaha R1), stats panel (speed, acceleration, nitro, braking, grip) with real-life figures, upgrades under each owned vehicle (kept per vehicle, cost scales with the vehicle price), colour changes by recolouring the picture, exhaust flames and afterfire. Ownership is saved under `FLEET_KEY` (`musti-fleet-v2`).
 
 Next requests from the owner (do them in this order):
-- [ ] More career cups and harder, smarter AI as cups go up (more than three cups so it never gets boring).
 - [ ] Engine sound: each brand must sound like its real engine and build up naturally with speed (not just louder). Rework `engineAudio.ts`.
 - [ ] Move the wallet to the server (Supabase), including stake and pot payouts, prices and upgrade purchases. Then the browser can no longer edit it.
 

@@ -597,3 +597,6 @@ html, body { max-width: 100%; overflow-x: hidden; -webkit-text-size-adjust: 100%
 .garage-upgrades { display: grid; gap: .7rem; margin-top: 1.1rem; text-align: left; }
 .garage-upgrades > h3 { margin: 0; font-family: "Bebas Neue", sans-serif; font-size: 1.5rem; font-weight: 400; letter-spacing: .08em; }
 .garage-locked-note { margin-top: .9rem; text-align: center; }
+
+/* ===== Career: long cup list ===== */
+.career-tiers { max-height: min(56vh, 30rem); overflow-y: auto; padding-right: .2rem; -webkit-overflow-scrolling: touch; }

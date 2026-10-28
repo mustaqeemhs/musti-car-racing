@@ -116,6 +116,7 @@ import {
   parseCareer,
   placeOf,
   prizeFor,
+  raceLengthFor,
   recordCareerResult,
   stepAiRacer,
   type AiRacer,
@@ -410,6 +411,7 @@ const [careerResult, setCareerResult] = useState<{ tier: CareerTier; place: numb
 const [roomMoved, setRoomMoved] = useState(false);
 const [roomClosed, setRoomClosed] = useState(false);
 const [netDebug, setNetDebug] = useState("");
+const raceLengthUi = careerRun ? raceLengthFor(careerRun, MULTIPLAYER_RACE_LENGTH) : MULTIPLAYER_RACE_LENGTH;
 const [raceMenuOpen, setRaceMenuOpen] = useState(false);
 const [onlinePot, setOnlinePot] = useState<{ pot: number; won: boolean } | null>(null);
 const [livePlace, setLivePlace] = useState(1);
@@ -428,7 +430,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [] as AchievementId[],
     lives: MAX_LIVES, invuln: 0, boost: 1, boosting: false, boostVis: 0, shake: 0, hitFlash: 0,
     drift: 0, traction: 1, driftCd: 0, driftDir: 0,
-    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[], afterfire: 0, prevBoosting: false, brakeMul: 1,
+    cars: [] as Car[], pickups: [] as Pickup[], coins: [] as Coin[], hazards: [] as Hazard[], particles: [] as Particle[], popups: [] as Popup[], props: [] as Prop[], skids: [] as Skid[], remoteRacers: [] as OnlineRacer[], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[], afterfire: 0, prevBoosting: false, brakeMul: 1, raceLength: MULTIPLAYER_RACE_LENGTH,
     spawnT: 0, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 6, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, propT: 0, heat: 0, bonus: 0, walletSaveFailed: false,
   });
 
@@ -617,7 +619,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       },
       upgradeLevels,
     );
-    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[], afterfire: 0, prevBoosting: false, brakeMul: 1, spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
+    Object.assign(W, { speed: BASE_SPEED, cruise: BASE_SPEED, distance: 0, time: 0, raceId: makeRaceId(), coinsCollected: 0, nearMisses: 0, rewardEventSequence: 0, entitySequence: 0, unlockedAchievementsThisRace: [], lives: MAX_LIVES, invuln: 1.5, boostCapacity: W.vehiclePerformance.nitroCapacity, boost: W.vehiclePerformance.nitroCapacity, boosting: false, boostVis: 0, shake: 0, hitFlash: 0, drift: 0, traction: 1, driftCd: 0, driftDir: 0, cars: [], pickups: [], coins: [], hazards: [], particles: [], popups: [], skids: [], remoteRacers: [], remoteViews: new Map<string, RacerDisplay>(), bumpCd: 0, ai: [] as AiRacer[], afterfire: 0, prevBoosting: false, brakeMul: 1, raceLength: MULTIPLAYER_RACE_LENGTH, spawnT: 0.8, pickupT: 1.2, coinT: 0.25, hazardT: 5, policeT: 1, difficultyLevel: 1, pursuit: createPursuitState(), policeWarning: 0, heat: 0, pvx: 0, heading: 0, bonus: 0, walletSaveFailed: false });
     const nitroCapacity = W.vehiclePerformance.nitroCapacity * (vehicleDef?.nitroMul ?? 1);
     W.boostCapacity = nitroCapacity;
     W.boost = nitroCapacity;
@@ -700,8 +702,12 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       startingCareerRef.current = false;
     }
     const W = world.current;
-    const carIds = VEHICLE_DEFS.filter((vehicle) => vehicle.cat === "car").map((vehicle) => vehicle.id);
+    // rivals drive the slower cars in the early cups and the fastest cars in the top cups
+    const carIds = VEHICLE_DEFS.filter((vehicle) => vehicle.cat === "car")
+      .sort((first, second) => first.real.topKmh - second.real.topKmh)
+      .map((vehicle) => vehicle.id);
     W.ai = createAiRacers(tier, carIds, Math.random);
+    W.raceLength = raceLengthFor(tier, MULTIPLAYER_RACE_LENGTH);
     W.remoteViews.clear();
     const now = performance.now();
     for (const ai of W.ai) {
@@ -716,7 +722,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
   /** The player crossed the line in a career race: work out the place, pay the prize, unlock the next cup. */
   const completeCareer = useCallback((tier: CareerTier, myTime: number) => {
     const W = world.current;
-    const standings = careerStandings(myTime, W.ai, MULTIPLAYER_RACE_LENGTH, "You");
+    const standings = careerStandings(myTime, W.ai, W.raceLength, "You");
     const place = placeOf(standings);
     const prize = prizeFor(tier, place);
     let unlockedNext = false;
@@ -1432,19 +1438,30 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       const dy = W.speed * dt;
       W.distance += dy; W.scroll = (W.scroll + dy) % 80;
       const finishingRace = multiplayerRaceRef.current;
-      if (finishingRace && W.distance >= MULTIPLAYER_RACE_LENGTH && phaseRef.current === "playing") {
+      if (finishingRace && W.distance >= W.raceLength && phaseRef.current === "playing") {
         const finishDistance = W.distance;
         finish();
         void reportOnlineFinish(finishingRace, finishDistance);
       }
       const careerNow = careerRef.current;
-      if (careerNow && W.distance >= MULTIPLAYER_RACE_LENGTH && phaseRef.current === "playing") {
+      if (careerNow && W.distance >= W.raceLength && phaseRef.current === "playing") {
         const myTime = W.time;
         finish();
         completeCareer(careerNow.tier, myTime);
       }
       if (careerNow && phaseRef.current === "playing") {
-        const aiContext = { time: W.time, playerDistance: W.distance, cruise: W.cruise, raceLength: MULTIPLAYER_RACE_LENGTH, tier: careerNow.tier, rand: Math.random };
+        // Rivals race against a fixed reference car (a Musti GT), not against the player's own car,
+        // so buying a faster vehicle or upgrades really helps.
+        const referenceMax = MAX_SPEED;
+        const aiContext = {
+          time: W.time,
+          playerDistance: W.distance,
+          playerLane: Math.max(0, Math.min(1, (W.px - W.roadX) / W.roadW)),
+          reference: Math.min(referenceMax * 0.62, BASE_SPEED + W.time * 6 * (referenceMax / MAX_SPEED)),
+          raceLength: W.raceLength,
+          tier: careerNow.tier,
+          rand: Math.random,
+        };
         const aiNow = performance.now();
         for (const ai of W.ai) {
           stepAiRacer(ai, dt, aiContext);
@@ -2088,7 +2105,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
       for (let i = 0; i < 6; i++) { const y = ((i * 211 + W.scroll * 1) % (h + 200)) - 100; c.fillRect(roadX + ((i * 97) % (roadW - 60)), y + ((W.distance / 1) % 1), 50, 26); }
       // online race finish line: distance boards, a wide checkered strip and a gantry
       if (multiplayerRaceRef.current || careerRef.current) {
-        const finishY = W.py - (MULTIPLAYER_RACE_LENGTH - W.distance);
+        const finishY = W.py - (W.raceLength - W.distance);
         c.save();
         c.textAlign = "center";
         for (const metres of [500, 300, 100]) {
@@ -2314,13 +2331,13 @@ if (drawnSize) {
         dt,
       });
       hudT += dt;
-      if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, progress: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction, wantedLevel: W.pursuit.wantedLevel, policeWarning: W.policeWarning });
+      if (hudT > 0.1 && ph === "playing") { hudT = 0; setHud({ score: scoreFor(W.distance, W.time) + Math.floor(W.bonus), speed: Math.round(W.speed * 0.26), lives: W.lives, progress: Math.min(1, W.distance / W.raceLength), boost: W.boost, heat: W.heat, drift: W.drift, traction: W.traction, wantedLevel: W.pursuit.wantedLevel, policeWarning: W.policeWarning });
         const onlineRace = multiplayerRaceRef.current;
         if (onlineRace || careerRef.current) {
-          const dots = [{ id: "me", p: Math.min(1, W.distance / MULTIPLAYER_RACE_LENGTH), color: SEAT_COLORS[onlineRace?.seat ?? 0] ?? "#ffffff", me: true, name: "You" }];
+          const dots = [{ id: "me", p: Math.min(1, W.distance / W.raceLength), color: SEAT_COLORS[onlineRace?.seat ?? 0] ?? "#ffffff", me: true, name: "You" }];
           const others: { userId: string; distance: number }[] = [];
           for (const racer of W.remoteViews.values()) {
-            dots.push({ id: racer.userId, p: Math.max(0, Math.min(1, racer.distance / MULTIPLAYER_RACE_LENGTH)), color: SEAT_COLORS[racer.seat] ?? "#aaaaaa", me: false, name: racer.username });
+            dots.push({ id: racer.userId, p: Math.max(0, Math.min(1, racer.distance / W.raceLength)), color: SEAT_COLORS[racer.seat] ?? "#aaaaaa", me: false, name: racer.username });
             others.push({ userId: racer.userId, distance: racer.distance });
           }
           setMapDots(dots);
@@ -2400,7 +2417,7 @@ if (drawnSize) {
                 <div className="race-map" aria-label="Race map">
                   <div className="race-map-top">
                     <span className="race-map-place">P{livePlace}/{Math.max(1, mapDots.length)}</span>
-                    <span className="race-map-dist">{formatDistanceToFinish((1 - hud.progress) * MULTIPLAYER_RACE_LENGTH)} to finish</span>
+                    <span className="race-map-dist">{formatDistanceToFinish((1 - hud.progress) * raceLengthUi)} to finish</span>
                   </div>
                   <div className="race-map-track">
                     <div className="race-map-fill" style={{ width: `${Math.round(hud.progress * 100)}%` }} />
@@ -2512,7 +2529,7 @@ if (drawnSize) {
             {screenName === "career" && (
               <div className="menu-card career-card">
                 <h2 className="screen-title">CAREER</h2>
-                <p className="note">Race three AI rivals over the full course. Finish on the podium to open the next cup and win Jaa'izah.</p>
+                <p className="note">Race three AI rivals. Finish on the podium (top 3) to open the next cup and win Jaa'izah. The higher cups have faster, smarter rivals, so you will need a faster vehicle, upgrades and good nitro use.</p>
                 <div className="career-tiers">
                   {CAREER_TIERS.map((tier, index) => {
                     const locked = index >= career.unlocked;
@@ -2520,9 +2537,12 @@ if (drawnSize) {
                     return (
                       <div key={tier.id} className={locked ? "career-tier career-locked" : "career-tier"}>
                         <div className="career-info">
-                          <strong>{tier.name}</strong>
+                          <strong>{index + 1}. {tier.name}</strong>
                           <span className="hud-label">{tier.blurb}</span>
-                          <span className="note">Prizes: 1st {tier.rewards[0]} · 2nd {tier.rewards[1]} · 3rd {tier.rewards[2]} Jaa'izah</span>
+                          <span className="note">
+                            {formatDistanceToFinish(raceLengthFor(tier, MULTIPLAYER_RACE_LENGTH))} race · Rival level {index + 1} of {CAREER_TIERS.length}
+                          </span>
+                          <span className="note">Prizes: 1st {tier.rewards[0].toLocaleString()} · 2nd {tier.rewards[1].toLocaleString()} · 3rd {tier.rewards[2].toLocaleString()} Jaa'izah</span>
                           {best ? <span className="hud-label">Best finish: #{best}</span> : null}
                         </div>
                         <button className="cta career-btn" disabled={locked} onClick={() => startCareer(tier.id)}>
