@@ -600,3 +600,15 @@ html, body { max-width: 100%; overflow-x: hidden; -webkit-text-size-adjust: 100%
 
 /* ===== Career: long cup list ===== */
 .career-tiers { max-height: min(56vh, 30rem); overflow-y: auto; padding-right: .2rem; -webkit-overflow-scrolling: touch; }
+
+/* ===== Account screen ===== */
+.account-card { max-width: 30rem; display: grid; gap: .8rem; text-align: center; }
+.account-wallet { display: grid; gap: .2rem; padding: .8rem 1rem; border: 1px solid color-mix(in oklab, var(--paper) 18%, transparent); border-radius: 8px; background: color-mix(in oklab, var(--paper) 5%, transparent); }
+.account-wallet strong { font-family: "Bebas Neue", sans-serif; font-size: 1.8rem; font-weight: 400; letter-spacing: .08em; color: #ffd166; }
+.account-btn { font-size: 1.15rem; padding: .6rem 1rem; }
+.account-name { display: grid; gap: .3rem; text-align: left; }
+.account-row { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
+.account-row input { flex: 1; min-width: 0; }
+.account-actions { display: grid; gap: .5rem; }
+.account-auth { display: grid; gap: .5rem; text-align: left; padding: .9rem 1rem; border: 1px solid color-mix(in oklab, var(--paper) 22%, transparent); border-radius: 8px; }
+.account-auth input { width: 100%; box-sizing: border-box; padding: .65rem .8rem; border-radius: 6px; border: 1px solid color-mix(in oklab, var(--paper) 35%, transparent); background: #0d1729; color: #fff; font-size: 1rem; }

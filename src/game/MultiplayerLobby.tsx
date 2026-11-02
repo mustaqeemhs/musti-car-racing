@@ -4,6 +4,10 @@ import { getSupabaseClient } from "@/lib/supabase";
 import { WALLET_KEY } from "./garageData";
 import { raceCountdownSeconds } from "./multiplayerState";
 
+/** A guest account (no email yet) is not good enough for online play. */
+const verifiedOnly = <T extends { user: { is_anonymous?: boolean } } | null>(value: T): T | null =>
+  value && !value.user.is_anonymous ? value : null;
+
 const STAKE_OPTIONS = [0, 50, 100, 250, 500, 1000];
 
 function readWalletBalance(): number | null {
@@ -80,6 +84,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
   const [countdown, setCountdown] = useState<number | null>(null);
   const startedRoomRef = useRef("");
   const authRequestInFlight = useRef(false);
+  const linkModeRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -88,7 +93,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
       setClient(supabase);
       const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
         if (active) {
-          setSession(nextSession);
+          setSession(verifiedOnly(nextSession));
         }
       });
       void supabase.auth.getSession().then(({ data: sessionData, error: sessionError }) => {
@@ -97,7 +102,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
           setError(sessionError.message);
           setConnection("offline");
         } else {
-          setSession(sessionData.session);
+          setSession(verifiedOnly(sessionData.session));
           setConnection("connected");
         }
         setLoading(false);
@@ -379,10 +384,22 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
     setAuthMessage("");
     let cooldownRequired = false;
     try {
-      const { error: signInError } = await client.auth.signInWithOtp({
-        email: email.trim(),
-        options: { shouldCreateUser: true },
-      });
+      // A guest on this device already has a hidden account. Add the email to it, so nothing is lost.
+      linkModeRef.current = false;
+      let signInError: Awaited<ReturnType<typeof client.auth.signInWithOtp>>["error"] = null;
+      const current = await client.auth.getSession();
+      if (current.data.session?.user.is_anonymous) {
+        const { error: linkError } = await client.auth.updateUser({ email: email.trim() });
+        if (!linkError) linkModeRef.current = true;
+        else if (!/already|registered|exists/i.test(linkError.message)) signInError = linkError;
+      }
+      if (!linkModeRef.current && !signInError) {
+        const result = await client.auth.signInWithOtp({
+          email: email.trim(),
+          options: { shouldCreateUser: true },
+        });
+        signInError = result.error;
+      }
       if (signInError) {
         setError(emailOtpErrorMessage(signInError, false));
         cooldownRequired = shouldCooldownAfterOtpError(signInError);
@@ -414,7 +431,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
       const { data, error: verifyError } = await client.auth.verifyOtp({
         email: email.trim(),
         token: emailCode.trim(),
-        type: "email",
+        type: linkModeRef.current ? "email_change" : "email",
       });
       if (verifyError) {
         setError(emailOtpErrorMessage(verifyError, true));
@@ -691,8 +708,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
     return (
       <section className="multiplayer-panel">
         <p className="note">
-          Online play requires a verified sign-in. Your guest wallet, vehicle ownership, upgrades,
-          and achievements stay separate and are never uploaded or overwritten.
+          Online play requires a verified sign-in. Your Jaa&apos;izah, cars and achievements are saved to this account, so you can log in on any device.
         </p>
         {!emailCodeSent ? (
           <form
@@ -790,8 +806,7 @@ export function MultiplayerLobby({ onRaceStart, onBack, vehicleId, paint }: Mult
           </p>
         )}
         <p className="note">
-          The multiplayer identity uses Supabase Auth. It does not link or migrate your local guest
-          save.
+          Your account keeps your wallet, garage and achievements safe on the server.
         </p>
         <button className="cta" onClick={onBack}>
           BACK

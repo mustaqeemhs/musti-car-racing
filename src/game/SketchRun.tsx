@@ -67,6 +67,20 @@ import {
 } from "./fleet";
 import { artSprite, onVehicleArtLoaded, preloadVehicleArt } from "./vehicleArt";
 import { drawExhaustFlames, flameIntensity } from "./exhaust";
+import { normalizeProgression } from "./progression";
+import {
+  beginRaceServer,
+  buyUpgradeServer,
+  buyVehicleServer,
+  flushPendingSettles,
+  friendlyWalletError,
+  loadPlayerState,
+  refreshPlayerState,
+  selectVehicleServer,
+  settleCareerServer,
+  settleRaceServer,
+  subscribePlayerState,
+} from "./serverWallet";
 import {
   ACHIEVEMENTS,
   EMPTY_PROGRESSION,
@@ -407,7 +421,8 @@ const careerRef = useRef<{ tier: CareerTier } | null>(null);
 const startingCareerRef = useRef(false);
 const [careerRun, setCareerRun] = useState<CareerTier | null>(null);
 const [career, setCareer] = useState<CareerProgress>(EMPTY_CAREER);
-const [careerResult, setCareerResult] = useState<{ tier: CareerTier; place: number; prize: number; standings: CareerStanding[]; unlockedNext: boolean } | null>(null);
+const [careerResult, setCareerResult] = useState<{ tier: CareerTier; place: number; prize: number; standings: CareerStanding[]; unlockedNext: boolean; note?: string } | null>(null);
+const serverRaceId = useRef("");
 const [roomMoved, setRoomMoved] = useState(false);
 const [roomClosed, setRoomClosed] = useState(false);
 const [netDebug, setNetDebug] = useState("");
@@ -444,93 +459,50 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     });
   }, []);
 
-  const vehicleIds = VEHICLE_DEFS.map((vehicle) => vehicle.id);
-  const loadFleet = () => parseFleet(localStorage.getItem(FLEET_KEY), vehicleIds, STARTER_VEHICLE_IDS);
-  const storeFleet = (next: FleetState) => localStorage.setItem(FLEET_KEY, JSON.stringify(next));
-
-  const purchaseOrSelectVehicle = (vehicleId: string) => {
+  const purchaseOrSelectVehicle = async (vehicleId: string) => {
     const vehicle = VEHICLE_DEFS.find((item) => item.id === vehicleId);
     if (!vehicle) return;
     try {
-      const current = loadFleet();
-
-      // Already owned: select it without charging the player.
-      if (current.owned.includes(vehicleId)) {
-        const next = selectVehicle(current, vehicleId);
-        if (!next) return;
-        storeFleet(next);
-        setFleetState(next);
-        setSelectedVehicleState(vehicleId);
-        selectedVehicleRef.current = vehicleId;
+      if (ownedVehicles.includes(vehicleId)) {
+        await selectVehicleServer(vehicleId);
         setGarageMessage(`${vehicle.name} selected!`);
-        return;
-      }
-
-      const balance = readWalletBalance();
-      if (balance === null) {
-        setGarageMessage("Create your guest profile before buying vehicles.");
-        return;
-      }
-      const result = buyVehicle(current, vehicle, balance);
-      if (!result.ok) {
-        setGarageBalance(balance);
-        setGarageMessage(
-          result.reason === "funds"
-            ? `Not enough Jaa'izah. You need ${(result.missing ?? 0).toLocaleString()} more.`
-            : "That vehicle cannot be bought.",
-        );
-        return;
-      }
-      const newBalance = adjustWallet(-vehicle.price);
-      if (newBalance === null) {
-        setGarageMessage("Purchase failed. Check your saved wallet and try again.");
-        return;
-      }
-      storeFleet(result.state);
-      setFleetState(result.state);
-      setSelectedVehicleState(vehicleId);
-      selectedVehicleRef.current = vehicleId;
-      setGarageBalance(newBalance);
-      setGarageMessage(`${vehicle.name} purchased and selected!`);
-    } catch {
-      setGarageMessage("Purchase failed. Please try again.");
-    }
-  };
-
-  const buyUpgrade = (vehicleId: string, category: UpgradeCategory) => {
-    const vehicle = VEHICLE_DEFS.find((item) => item.id === vehicleId);
-    if (!vehicle) return;
-    try {
-      const current = loadFleet();
-      const level = levelsFor(current, vehicleId)[category] ?? 0;
-      const cost = scaledUpgradeCost(nextUpgradeCost(category, level), vehicle.price);
-      const balance = readWalletBalance();
-      if (balance === null) {
-        setUpgradeMessage("Create a guest profile before purchasing upgrades.");
-        return;
-      }
-      const result = applyUpgrade(current, vehicleId, category, cost, balance, MAX_UPGRADE_LEVEL);
-      if (result.status === "purchased") {
-        const newBalance = adjustWallet(-(cost ?? 0));
-        storeFleet(result.state);
-        setFleetState(result.state);
-        setGarageBalance(newBalance ?? result.balance);
-        setUpgradeMessage(
-          `${vehicle.name}: ${UPGRADE_DEFINITIONS[category].title} upgraded to level ${result.level}.`,
-        );
-      } else if (result.status === "insufficient-funds") {
-        setGarageBalance(balance);
-        setUpgradeMessage("Not enough Jaa'izah for that upgrade.");
-      } else if (result.status === "max-level") {
-        setUpgradeMessage(`${UPGRADE_DEFINITIONS[category].title} is already maxed.`);
       } else {
-        setUpgradeMessage("Buy this vehicle first to upgrade it.");
+        await buyVehicleServer(vehicleId);
+        setGarageMessage(`${vehicle.name} purchased and selected!`);
       }
     } catch (error) {
-      console.error("Could not purchase vehicle upgrade.", error);
-      setUpgradeMessage("Upgrade purchase failed. Check your saved wallet and try again.");
+      setGarageMessage(friendlyWalletError(error));
     }
   };
+
+  const buyUpgrade = async (vehicleId: string, category: UpgradeCategory) => {
+    const vehicle = VEHICLE_DEFS.find((item) => item.id === vehicleId);
+    if (!vehicle) return;
+    const level = levelsFor(fleet, vehicleId)[category] ?? 0;
+    try {
+      await buyUpgradeServer(vehicleId, category, level);
+      setUpgradeMessage(`${vehicle.name}: ${UPGRADE_DEFINITIONS[category].title} upgraded to level ${level + 1}.`);
+    } catch (error) {
+      setUpgradeMessage(friendlyWalletError(error));
+    }
+  };
+
+  // Sign in (as an invisible guest if needed), load the wallet from the server, and keep the screens in step with it.
+  useEffect(() => {
+    const unsubscribe = subscribePlayerState((state) => {
+      if (!state) return;
+      setFleetState({ owned: state.owned, selected: state.selected, upgrades: state.upgrades });
+      setSelectedVehicleState(state.selected);
+      selectedVehicleRef.current = state.selected;
+      setGarageBalance(state.balance);
+      setCareer({ unlocked: state.career.unlocked, best: state.career.best } as CareerProgress);
+      setProgression(normalizeProgression(state.progression));
+    });
+    void loadPlayerState().then(() => flushPendingSettles()).catch(() => {
+      /* offline: the game keeps working from this device's copy */
+    });
+    return unsubscribe;
+  }, []);
 
   // Real vehicle pictures load in the background; redraw the garage when one arrives.
   useEffect(() => {
@@ -638,7 +610,15 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     if (!startingCareerRef.current) { careerRef.current = null; setCareerRun(null); setCareerResult(null); world.current.ai = []; }
     sfx.current.ensure();
     sfx.current.setVehicle(engineProfileFor(VEHICLE_DEFS.find((vehicle) => vehicle.id === selectedVehicleRef.current)));
-    reset(); setPhase("playing"); sfx.current.blip(660, 0.12); setTimeout(() => sfx.current.blip(990, 0.18), 120);
+    reset();
+    // the server needs to know a race started, so it can check the result when it ends
+    serverRaceId.current = crypto.randomUUID();
+    void beginRaceServer(
+      serverRaceId.current,
+      careerRef.current ? "career" : multiplayerRaceRef.current ? "online" : "solo",
+      careerRef.current?.tier.id ?? null,
+    );
+    setPhase("playing"); sfx.current.blip(660, 0.12); setTimeout(() => sfx.current.blip(990, 0.18), 120);
   }, [reset, setPhase]);
   const startMultiplayerRace = useCallback((race: MultiplayerRaceStart) => {
     multiplayerRaceRef.current = race;
@@ -653,19 +633,8 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     setRaceMenuOpen(false);
     setLivePlace(1);
     setMapDots([]);
-    // Everyone puts their stake in the pot when the race starts.
-    if (race.stake > 0) {
-      const key = `musti-stake-${race.roomId}-${race.startAt}`;
-      try {
-        if (!localStorage.getItem(key)) {
-          localStorage.setItem(key, "1");
-          const balance = adjustWallet(-race.stake);
-          if (balance !== null) setGarageBalance(balance);
-        }
-      } catch {
-        /* storage unavailable: the race still starts */
-      }
-    }
+    // The server already took everyone's stake when the host started the race.
+    void refreshPlayerState();
     start();
   }, [start]);
   const togglePause = useCallback(() => {
@@ -719,27 +688,21 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
     }
   }, [start]);
 
-  /** The player crossed the line in a career race: work out the place, pay the prize, unlock the next cup. */
+  /** The player crossed the line in a career race. The server checks the result and pays the prize. */
   const completeCareer = useCallback((tier: CareerTier, myTime: number) => {
     const W = world.current;
     const standings = careerStandings(myTime, W.ai, W.raceLength, "You");
     const place = placeOf(standings);
-    const prize = prizeFor(tier, place);
-    let unlockedNext = false;
-    try {
-      const before = parseCareer(localStorage.getItem(CAREER_KEY));
-      const after = recordCareerResult(before, tier.id, place);
-      unlockedNext = after.unlocked > before.unlocked;
-      localStorage.setItem(CAREER_KEY, JSON.stringify(after));
-      setCareer(after);
-    } catch {
-      /* the race result still shows */
-    }
-    if (prize > 0) {
-      const balance = adjustWallet(prize);
-      if (balance !== null) setGarageBalance(balance);
-    }
-    setCareerResult({ tier, place, prize, standings, unlockedNext });
+    const raceId = serverRaceId.current;
+    setCareerResult({ tier, place, prize: prizeFor(tier, place), standings, unlockedNext: false, note: "Checking your prize with the server…" });
+    void settleCareerServer(raceId, tier.id, place, myTime).then((result) => {
+      setCareerResult((current) => {
+        if (!current || current.tier.id !== tier.id) return current;
+        return result
+          ? { ...current, prize: result.prize, unlockedNext: result.unlockedNext, note: "" }
+          : { ...current, prize: 0, note: "The server could not confirm this result, so no prize was paid." };
+      });
+    });
   }, []);
 
   const toMenu = useCallback(() => {
@@ -786,22 +749,9 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
           const pot = typeof row?.pot === "number" ? row.pot : 0;
           if (place !== null) setOnlinePlace(place);
           if (pot > 0) {
-            if (place === 1) {
-              // The winner takes the whole pot (paid once per race).
-              const key = `musti-pot-${race.roomId}-${race.startAt}`;
-              try {
-                if (!localStorage.getItem(key)) {
-                  localStorage.setItem(key, "1");
-                  const balance = adjustWallet(pot);
-                  if (balance !== null) setGarageBalance(balance);
-                  setOnlinePot({ pot, won: true });
-                }
-              } catch {
-                setOnlinePot({ pot, won: true });
-              }
-            } else {
-              setOnlinePot({ pot, won: false });
-            }
+            // The server paid the winner. Reload the wallet to show the new balance.
+            setOnlinePot({ pot, won: place === 1 });
+            void refreshPlayerState();
           }
           setOnlineNote("");
           return;
@@ -1258,6 +1208,7 @@ const [mapDots, setMapDots] = useState<{ id: string; p: number; color: string; m
         setProgressionError(saveError);
         console.error("Could not save race progression.", error);
       }
+      void settleRaceServer(serverRaceId.current, { score, distance: W.distance, time: W.time, coins: W.coinsCollected, nearMisses: W.nearMisses });
       if (newBest) { localStorage.setItem(BEST_KEY, String(score)); setBest(score); }
       else setBest(Math.max(prev, savedProgression.bestScore));
       if (balanceAfterProgression !== null) setGarageBalance(balanceAfterProgression);
@@ -2515,7 +2466,7 @@ if (drawnSize) {
                     <button className="btn-secondary" onClick={() => setScreen("controls")}>Controls</button>
                     <button className="btn-secondary" onClick={() => setScreen("achievements")}>Achievements</button>
                     <button className="btn-secondary" onClick={() => setScreen("account")}>
-  Guest Profile & Jaa'izah
+  Account &amp; Jaa&apos;izah
 </button>
                   </nav>
                   <div className="menu-foot">
@@ -2987,6 +2938,7 @@ if (drawnSize) {
                   <p className={careerResult.prize > 0 ? "note pot-won" : "note"}>
                     {careerResult.prize > 0 ? `Prize: +${careerResult.prize.toLocaleString()} Jaa'izah` : "No prize this time."}
                   </p>
+                  {careerResult.note && <p className="note">{careerResult.note}</p>}
                   {careerResult.unlockedNext && <p className="note pot-won">New cup unlocked! Open the Career menu.</p>}
                   <ol className="board">
                     {careerResult.standings.map((row, i) => (
