@@ -59,9 +59,10 @@ Next requests from the owner (do them in this order):
   - **Supabase settings the owner must have on:** Authentication > Sign In / Providers > "Allow anonymous sign-ins", and the "Change email address" email template must show the 6-digit code with `{{ .Token }}` (used when a guest saves their progress).
   - Solo rewards are checked against real elapsed time and capped per race and per day (15,000 Jaa'izah a day from races). They cannot be perfectly cheat-proof without running the game on the server.
 
+- [x] **Part 3, road forks (done, needs a real play test):** every few thousand metres the highway splits (`roadZones.ts`). "Triple" fork: left lane = SHORTCUT (30% extra progress, crowded with traffic), middle two lanes = MAIN road, right lane = NITRO route (clear road, nitro refills, coin trail). "Double" fork: left two lanes = SHORTCUT, right two = MAIN. Overhead signs warn before each split, concrete median walls keep corridors apart, the map bar shows fork markers, and career rivals also take shortcuts sometimes. The forks come from a seed (room id + start time online), so every player in a room sees them at the same place. Tune `CORRIDOR_EFFECT`, `FORK_SPACING`, `FORK_FIRST` in `roadZones.ts`.
+
 Not done yet (in this order):
 - [ ] More vehicles: the owner sends more top-down PNGs. To add one: save it as `src/assets/vehicles/<id>.webp` (nose up, transparent, about 640 px tall, cropped to the car), then add one `makeVehicle({...})` line in `src/game/carArt.ts` (real top speed, 0-100 time, hp, price, grip, brake, nitro). The price must follow the real speed (a test checks this).
-- [ ] **Part 3, highway:** roads that split into 2 or 3 branches with shortcuts (Asphalt style). Splits must be the same for all players in a room (deterministic from the room/race id).
 - [ ] Make sure 4 players stay smooth on phones (watch frame rate; the HUD re-renders about 10 times a second).
 - [ ] Optional: server-side wallet; background music; sound for other racers' engines.
 
